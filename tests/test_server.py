@@ -134,6 +134,16 @@ class TestExportMarkdown:
         assert resp.status_code == 404
 
 
+class TestHealth:
+    def test_health_check(self, client):
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert "version" in data
+        assert "videos" in data
+
+
 class TestIndex:
     def test_serves_html(self, client):
         resp = client.get("/")

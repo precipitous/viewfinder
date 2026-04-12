@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Viewfinder</title>
+    <style>
+        :root {
+            --bg: #0d1117; --bg2: #161b22; --border: #30363d;
+            --text: #c9d1d9; --text2: #8b949e; --accent: #58a6ff;
+            --green: #238636; --green-hover: #2ea043; --orange: #f0883e;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+               background: var(--bg); color: var(--text); }
+
+        .layout { display: flex; min-height: 100vh; }
+        .sidebar { width: 260px; background: var(--bg2); border-right: 1px solid var(--border);
+                   padding: 20px; flex-shrink: 0; overflow-y: auto; }
+        .main { flex: 1; padding: 24px 32px; overflow-y: auto; max-width: 900px; }
+
+        .logo { color: var(--accent); font-size: 22px; font-weight: 700; margin-bottom: 24px; }
+        .nav-item { display: block; padding: 8px 12px; border-radius: 6px; color: var(--text2);
+                    cursor: pointer; margin-bottom: 4px; font-size: 14px; }
+        .nav-item:hover { background: var(--border); color: var(--text); }
+        .nav-item.active { background: rgba(88,166,255,0.1); color: var(--accent); }
+
+        h2 { font-size: 20px; margin-bottom: 16px; color: var(--text); }
+        label { display: block; font-size: 13px; color: var(--text2); margin-bottom: 4px; margin-top: 12px; }
+        input[type="text"], select { width: 100%; padding: 10px; border: 1px solid var(--border);
+            border-radius: 6px; background: var(--bg); color: var(--text); font-size: 14px; }
+        select { appearance: auto; }
+
+        .form-row { display: flex; gap: 10px; align-items: end; }
+        .form-row > *:first-child { flex: 1; }
+
+        .options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; margin-top: 12px;
+                   padding: 16px; background: var(--bg2); border-radius: 6px; border: 1px solid var(--border); }
+        .options label { margin-top: 0; }
+
+        .checkbox-row { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+        .checkbox-row input { width: auto; }
+        .checkbox-row label { margin: 0; color: var(--text); }
+
+        button, .btn { padding: 10px 20px; border: none; border-radius: 6px; background: var(--green);
+                       color: white; font-size: 14px; font-weight: 600; cursor: pointer; }
+        button:hover { background: var(--green-hover); }
+        button:disabled { background: var(--border); cursor: not-allowed; }
+        .btn-sm { padding: 6px 12px; font-size: 12px; }
+
+        .status-bar { padding: 10px 14px; border-radius: 6px; background: var(--bg2); margin: 16px 0;
+                      border: 1px solid var(--border); font-size: 13px; color: var(--text2);
+                      min-height: 38px; display: flex; align-items: center; gap: 8px; }
+        .status-bar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+                           animation: pulse 1.5s infinite; }
+        .status-bar.idle .dot { display: none; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+        .result-card { padding: 20px; border-radius: 8px; background: var(--bg2);
+                       border: 1px solid var(--border); margin-bottom: 16px; }
+        .result-card h3 { color: var(--accent); margin-bottom: 8px; font-size: 17px; }
+        .result-meta { color: var(--text2); font-size: 13px; margin-bottom: 12px; }
+        .result-meta a { color: var(--accent); text-decoration: none; }
+        .result-body { line-height: 1.7; white-space: pre-wrap; }
+
+        .transcript-toggle { margin-top: 12px; }
+        .transcript-toggle summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+        .transcript-text { margin-top: 8px; white-space: pre-wrap; font-size: 13px;
+                           max-height: 400px; overflow-y: auto; color: var(--text2); line-height: 1.5; }
+
+        .video-row { display: flex; justify-content: space-between; align-items: center;
+                     padding: 12px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+        .video-row:hover { background: rgba(88,166,255,0.05); }
+        .video-title { color: var(--text); font-size: 14px; }
+        .video-meta { color: var(--text2); font-size: 12px; }
+        .video-badges { display: flex; gap: 6px; }
+        .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--border); color: var(--text2); }
+
+        .search-hit { padding: 12px 0; border-bottom: 1px solid var(--border); }
+        .search-hit a { color: var(--accent); text-decoration: none; font-size: 14px; }
+        .search-hit .snippet { font-size: 13px; color: var(--text2); margin-top: 4px; }
+        .search-hit b { color: var(--orange); }
+
+        .empty { color: var(--text2); font-style: italic; padding: 40px 0; text-align: center; }
+
+        @media (max-width: 768px) {
+            .layout { flex-direction: column; }
+            .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border);
+                       padding: 12px; display: flex; gap: 4px; align-items: center; overflow-x: auto; }
+            .logo { margin-bottom: 0; margin-right: 16px; }
+            .nav-item { white-space: nowrap; }
+            .main { padding: 16px; }
+            .options { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="layout">
+    <div class="sidebar">
+        <div class="logo">Viewfinder</div>
+        <div class="nav-item active" onclick="showTab('ingest')">Ingest Video</div>
+        <div class="nav-item" onclick="showTab('videos')">Video Library</div>
+        <div class="nav-item" onclick="showTab('search')">Search</div>
+        <div class="nav-item" onclick="showTab('api')">API Docs</div>
+    </div>
+
+    <div class="main">
+        <!-- INGEST TAB -->
+        <div id="tab-ingest">
+            <h2>Ingest a YouTube Video</h2>
+
+            <label>YouTube URL or Video ID</label>
+            <div class="form-row">
+                <input type="text" id="url" placeholder="https://youtube.com/watch?v=... or VIDEO_ID" />
+                <button id="btn-ingest" onclick="doIngest()">Process</button>
+            </div>
+
+            <div class="options">
+                <div>
+                    <label>Prompt Template</label>
+                    <select id="opt-prompt">
+                        <option value="default">Default (TL;DR + key points)</option>
+                        <option value="brief">Brief (3-5 sentences)</option>
+                        <option value="detailed">Detailed (section-by-section)</option>
+                        <option value="technical">Technical (concepts + tools)</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Model</label>
+                    <select id="opt-model">
+                        <option value="claude-sonnet-4-20250514">Claude Sonnet (default)</option>
+                        <option value="claude-haiku-4-5-20251001">Claude Haiku (fast/cheap)</option>
+                    </select>
+                </div>
+                <div>
+                    <label>Translate To</label>
+                    <input type="text" id="opt-translate" placeholder="e.g. es, fr, ja (blank = original)" />
+                </div>
+                <div>
+                    <div class="checkbox-row">
+                        <input type="checkbox" id="opt-transcript-only" />
+                        <label for="opt-transcript-only">Transcript only (no summary)</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="status-bar idle" id="status">
+                <div class="dot"></div>
+                <span id="status-text">Ready</span>
+            </div>
+
+            <div id="result"></div>
+        </div>
+
+        <!-- VIDEOS TAB -->
+        <div id="tab-videos" style="display:none">
+            <h2>Video Library</h2>
+            <div id="video-list"><div class="empty">Loading...</div></div>
+        </div>
+
+        <!-- SEARCH TAB -->
+        <div id="tab-search" style="display:none">
+            <h2>Search Transcripts</h2>
+            <div class="form-row" style="margin-bottom:16px">
+                <input type="text" id="search-q" placeholder="Search across all transcripts..." />
+                <button onclick="doSearch()">Search</button>
+            </div>
+            <div id="search-results"><div class="empty">Enter a search query above</div></div>
+        </div>
+
+        <!-- API DOCS TAB -->
+        <div id="tab-api" style="display:none">
+            <h2>API Reference</h2>
+            <div class="result-card">
+                <h3>POST /api/ingest</h3>
+                <div class="result-body">Submit a YouTube URL for processing.
+
+Request body (JSON):
+{
+  "url": "https://youtube.com/watch?v=VIDEO_ID",
+  "prompt": "default",         // default | brief | detailed | technical
+  "model": "claude-sonnet-4-20250514",
+  "translate_to": null,        // "es", "fr", etc.
+  "transcript_only": false,
+  "backend": "claude",         // "claude" or "openai"
+  "base_url": null             // for openai backend
+}
+
+Response: video_id, title, channel, word_count, summary, tokens used</div>
+            </div>
+            <div class="result-card">
+                <h3>GET /api/videos</h3>
+                <div class="result-body">List all ingested videos with transcript/summary counts.</div>
+            </div>
+            <div class="result-card">
+                <h3>GET /api/videos/{video_id}</h3>
+                <div class="result-body">Get full details: metadata, transcript text, all summaries.</div>
+            </div>
+            <div class="result-card">
+                <h3>GET /api/videos/{video_id}/transcript</h3>
+                <div class="result-body">Get timestamped transcript snippets.</div>
+            </div>
+            <div class="result-card">
+                <h3>GET /api/search?q=query</h3>
+                <div class="result-body">Full-text search across all transcript content.</div>
+            </div>
+            <div class="result-card">
+                <h3>GET /api/videos/{video_id}/export.md</h3>
+                <div class="result-body">Download video data as a Markdown file.</div>
+            </div>
+            <div class="result-card">
+                <h3>GET /api/cost</h3>
+                <div class="result-body">Cumulative token usage and cost breakdown by model.</div>
+            </div>
+            <div class="result-card">
+                <h3>GET /api/health</h3>
+                <div class="result-body">Health check. Returns {"status": "ok", "version": "..."}</div>
+            </div>
+            <div class="result-card" style="margin-top: 16px;">
+                <h3>Interactive API docs</h3>
+                <div class="result-body">FastAPI auto-generates interactive docs at:
+  <a href="/docs" target="_blank">/docs</a> (Swagger UI)
+  <a href="/redoc" target="_blank">/redoc</a> (ReDoc)</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// --- Tab navigation ---
+function showTab(name) {
+    document.querySelectorAll('[id^="tab-"]').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+    document.getElementById('tab-' + name).style.display = 'block';
+    event.target.classList.add('active');
+    if (name === 'videos') loadVideos();
+}
+
+// --- WebSocket progress ---
+let ws;
+function connectWs() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/ws/progress`);
+    ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        setStatus(msg.event.replace(/_/g, ' '), true);
+    };
+    ws.onclose = () => setTimeout(connectWs, 3000);
+}
+connectWs();
+
+function setStatus(text, active) {
+    const bar = document.getElementById('status');
+    document.getElementById('status-text').textContent = text;
+    bar.classList.toggle('idle', !active);
+}
+
+// --- Ingest ---
+async function doIngest() {
+    const url = document.getElementById('url').value.trim();
+    if (!url) return;
+
+    const btn = document.getElementById('btn-ingest');
+    btn.disabled = true;
+    setStatus('Submitting...', true);
+    document.getElementById('result').innerHTML = '';
+
+    const body = {
+        url,
+        prompt: document.getElementById('opt-prompt').value,
+        model: document.getElementById('opt-model').value,
+        transcript_only: document.getElementById('opt-transcript-only').checked,
+    };
+    const translate = document.getElementById('opt-translate').value.trim();
+    if (translate) body.translate_to = translate;
+
+    try {
+        const resp = await fetch('/api/ingest', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            setStatus('Error: ' + (data.detail || resp.statusText), false);
+            return;
+        }
+        setStatus('Done!', false);
+        renderResult(data);
+    } catch (e) {
+        setStatus('Error: ' + e.message, false);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function renderResult(data) {
+    const el = document.getElementById('result');
+    let html = `<div class="result-card">
+        <h3>${esc(data.title || data.video_id)}</h3>
+        <div class="result-meta">
+            ${esc(data.channel || '')}
+            &middot; ${data.word_count.toLocaleString()} words
+            &middot; ${data.language}${data.translated_from ? ' (from ' + data.translated_from + ')' : ''}
+            &middot; via ${data.source}
+            ${data.model ? '&middot; ' + data.model : ''}
+        </div>`;
+    if (data.summary) {
+        html += `<div class="result-body">${esc(data.summary)}</div>`;
+        if (data.input_tokens) {
+            html += `<div class="result-meta" style="margin-top:12px">Tokens: ${data.input_tokens.toLocaleString()} in / ${data.output_tokens.toLocaleString()} out</div>`;
+        }
+    } else {
+        html += `<div class="result-meta">Transcript extracted (no summary requested)</div>`;
+    }
+    html += `</div>`;
+    el.innerHTML = html;
+}
+
+// --- Video library ---
+async function loadVideos() {
+    const el = document.getElementById('video-list');
+    const resp = await fetch('/api/videos');
+    const videos = await resp.json();
+    if (videos.length === 0) { el.innerHTML = '<div class="empty">No videos ingested yet</div>'; return; }
+    el.innerHTML = videos.map(v => `
+        <div class="video-row" onclick="showVideo('${v.video_id}')">
+            <div>
+                <div class="video-title">${esc(v.title || v.video_id)}</div>
+                <div class="video-meta">${esc(v.channel || '')}</div>
+            </div>
+            <div class="video-badges">
+                <span class="badge">${v.transcript_count} transcript${v.transcript_count !== 1 ? 's' : ''}</span>
+                <span class="badge">${v.summary_count} summar${v.summary_count !== 1 ? 'ies' : 'y'}</span>
+            </div>
+        </div>
+    `).join('');
+}
+
+async function showVideo(id) {
+    showTab('ingest');
+    setStatus('Loading...', true);
+    const resp = await fetch('/api/videos/' + id);
+    const data = await resp.json();
+    setStatus('', false);
+
+    const el = document.getElementById('result');
+    let html = `<div class="result-card">
+        <h3>${esc(data.title || data.video_id)}</h3>
+        <div class="result-meta">
+            ${esc(data.channel || '')}
+            &middot; <a href="${data.url}" target="_blank">Watch on YouTube</a>
+            &middot; <a href="/api/videos/${data.video_id}/export.md">Export Markdown</a>
+        </div>`;
+    if (data.summaries && data.summaries.length > 0) {
+        html += `<div class="result-body">${esc(data.summaries[0].summary)}</div>`;
+    }
+    if (data.transcript && data.transcript.text) {
+        html += `<details class="transcript-toggle">
+            <summary>Full transcript (${data.transcript.word_count.toLocaleString()} words)</summary>
+            <div class="transcript-text">${esc(data.transcript.text)}</div>
+        </details>`;
+    }
+    html += '</div>';
+    el.innerHTML = html;
+}
+
+// --- Search ---
+async function doSearch() {
+    const q = document.getElementById('search-q').value.trim();
+    if (!q) return;
+    const resp = await fetch('/api/search?q=' + encodeURIComponent(q));
+    const results = await resp.json();
+    const el = document.getElementById('search-results');
+    if (results.length === 0) { el.innerHTML = '<div class="empty">No results found</div>'; return; }
+    el.innerHTML = results.map(r => `
+        <div class="search-hit">
+            <a href="#" onclick="showVideo('${r.video_id}'); return false;">${esc(r.title || r.video_id)}</a>
+            <span class="result-meta"> &middot; ${esc(r.channel || '')} &middot; ${r.language}</span>
+            <div class="snippet">${r.snippet}</div>
+        </div>
+    `).join('');
+}
+
+// --- Utils ---
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// Enter key handlers
+document.getElementById('url').addEventListener('keydown', (e) => { if (e.key === 'Enter') doIngest(); });
+document.getElementById('search-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+</script>
+</body>
+</html>

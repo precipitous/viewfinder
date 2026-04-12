@@ -11,6 +11,7 @@ Run with:
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,7 +45,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Viewfinder",
     description="YouTube video ingestion API -- transcripts, screenshots, and AI summaries",
-    version="0.4.0",
+    version="1.0.0",
     lifespan=lifespan,
 )
 
@@ -448,178 +449,36 @@ async def export_markdown(video_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Minimal HTML UI (served inline, no build step)
+# Health check
 # ---------------------------------------------------------------------------
 
-MINIMAL_HTML = """\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Viewfinder</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-               max-width: 900px; margin: 0 auto; padding: 20px; background: #0d1117; color: #c9d1d9; }
-        h1 { color: #58a6ff; margin-bottom: 20px; }
-        .form-row { display: flex; gap: 10px; margin-bottom: 20px; }
-        input[type="text"] { flex: 1; padding: 10px; border: 1px solid #30363d; border-radius: 6px;
-                             background: #161b22; color: #c9d1d9; font-size: 16px; }
-        button { padding: 10px 20px; border: none; border-radius: 6px; background: #238636;
-                 color: white; font-size: 16px; cursor: pointer; }
-        button:hover { background: #2ea043; }
-        button:disabled { background: #30363d; cursor: not-allowed; }
-        .status { padding: 10px; border-radius: 6px; background: #161b22; margin-bottom: 20px;
-                  border: 1px solid #30363d; min-height: 40px; }
-        .result { padding: 15px; border-radius: 6px; background: #161b22; border: 1px solid #30363d;
-                  margin-bottom: 15px; white-space: pre-wrap; line-height: 1.6; }
-        .result h2 { color: #58a6ff; margin-bottom: 10px; font-size: 18px; }
-        .meta { color: #8b949e; font-size: 14px; margin-bottom: 10px; }
-        .search-row { display: flex; gap: 10px; margin-bottom: 20px; }
-        .search-result { padding: 10px; border-bottom: 1px solid #30363d; }
-        .search-result b { color: #f0883e; }
-        a { color: #58a6ff; text-decoration: none; }
-        .tabs { display: flex; gap: 5px; margin-bottom: 20px; }
-        .tab { padding: 8px 16px; border-radius: 6px 6px 0 0; background: #161b22;
-               border: 1px solid #30363d; cursor: pointer; color: #8b949e; }
-        .tab.active { background: #0d1117; border-bottom-color: #0d1117; color: #c9d1d9; }
-    </style>
-</head>
-<body>
-    <h1>Viewfinder</h1>
 
-    <div class="tabs">
-        <div class="tab active" onclick="showTab('ingest')">Ingest</div>
-        <div class="tab" onclick="showTab('search')">Search</div>
-        <div class="tab" onclick="showTab('videos')">Videos</div>
-    </div>
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint."""
+    from . import __version__
 
-    <div id="tab-ingest">
-        <div class="form-row">
-            <input type="text" id="url" placeholder="Paste YouTube URL or video ID..." />
-            <button id="btn" onclick="ingest()">Ingest</button>
-        </div>
-        <div class="status" id="status"></div>
-        <div id="result"></div>
-    </div>
-
-    <div id="tab-search" style="display:none">
-        <div class="search-row">
-            <input type="text" id="search-q" placeholder="Search transcripts..." />
-            <button onclick="doSearch()">Search</button>
-        </div>
-        <div id="search-results"></div>
-    </div>
-
-    <div id="tab-videos" style="display:none">
-        <div id="video-list"></div>
-    </div>
-
-    <script>
-    function showTab(name) {
-        document.querySelectorAll('[id^="tab-"]').forEach(el => el.style.display = 'none');
-        document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
-        document.getElementById('tab-' + name).style.display = 'block';
-        event.target.classList.add('active');
-        if (name === 'videos') loadVideos();
+    store = get_store()
+    return {
+        "status": "ok",
+        "version": __version__,
+        "videos": store.video_count(),
     }
 
-    const ws = new WebSocket(`ws://${location.host}/ws/progress`);
-    ws.onmessage = (e) => {
-        const msg = JSON.parse(e.data);
-        const status = document.getElementById('status');
-        status.textContent = `[${msg.event}] ${msg.video_id || ''}`;
-    };
 
-    async function ingest() {
-        const url = document.getElementById('url').value.trim();
-        if (!url) return;
-        const btn = document.getElementById('btn');
-        btn.disabled = true;
-        document.getElementById('status').textContent = 'Submitting...';
-        document.getElementById('result').innerHTML = '';
-        try {
-            const resp = await fetch('/api/ingest', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({url})
-            });
-            const data = await resp.json();
-            if (!resp.ok) {
-                document.getElementById('status').textContent = 'Error: ' + (data.detail || resp.statusText);
-                return;
-            }
-            document.getElementById('status').textContent = 'Done!';
-            let html = `<div class="result"><h2>${data.title || data.video_id}</h2>`;
-            html += `<div class="meta">${data.channel || ''} | ${data.word_count} words | ${data.language}</div>`;
-            if (data.summary) html += `<div>${data.summary}</div>`;
-            else html += `<div class="meta">Transcript only (${data.source})</div>`;
-            html += '</div>';
-            document.getElementById('result').innerHTML = html;
-        } catch(e) {
-            document.getElementById('status').textContent = 'Error: ' + e.message;
-        } finally {
-            btn.disabled = false;
-        }
-    }
+# ---------------------------------------------------------------------------
+# Web UI (served from static/index.html)
+# ---------------------------------------------------------------------------
 
-    async function doSearch() {
-        const q = document.getElementById('search-q').value.trim();
-        if (!q) return;
-        const resp = await fetch('/api/search?q=' + encodeURIComponent(q));
-        const results = await resp.json();
-        const el = document.getElementById('search-results');
-        if (results.length === 0) { el.innerHTML = '<p>No results.</p>'; return; }
-        el.innerHTML = results.map(r =>
-            `<div class="search-result">
-                <a href="#" onclick="showVideo('${r.video_id}')">${r.title || r.video_id}</a>
-                <span class="meta"> | ${r.channel || ''} | ${r.language}</span>
-                <div>${r.snippet}</div>
-            </div>`
-        ).join('');
-    }
-
-    async function loadVideos() {
-        const resp = await fetch('/api/videos');
-        const videos = await resp.json();
-        const el = document.getElementById('video-list');
-        if (videos.length === 0) { el.innerHTML = '<p>No videos yet.</p>'; return; }
-        el.innerHTML = videos.map(v =>
-            `<div class="search-result">
-                <a href="#" onclick="showVideo('${v.video_id}')">${v.title || v.video_id}</a>
-                <span class="meta"> | ${v.channel || ''} | ${v.transcript_count} transcripts | ${v.summary_count} summaries</span>
-            </div>`
-        ).join('');
-    }
-
-    async function showVideo(id) {
-        showTab('ingest');
-        document.getElementById('status').textContent = 'Loading...';
-        const resp = await fetch('/api/videos/' + id);
-        const data = await resp.json();
-        document.getElementById('status').textContent = '';
-        let html = `<div class="result"><h2>${data.title || data.video_id}</h2>`;
-        html += `<div class="meta">${data.channel || ''} | <a href="${data.url}" target="_blank">YouTube</a></div>`;
-        if (data.summaries && data.summaries.length > 0) {
-            html += `<div>${data.summaries[0].summary}</div>`;
-        }
-        if (data.transcript && data.transcript.text) {
-            html += `<details><summary>Full transcript (${data.transcript.word_count} words)</summary>`;
-            html += `<pre style="white-space:pre-wrap;margin-top:10px">${data.transcript.text}</pre></details>`;
-        }
-        html += '</div>';
-        document.getElementById('result').innerHTML = html;
-    }
-
-    document.getElementById('url').addEventListener('keydown', (e) => { if (e.key === 'Enter') ingest(); });
-    </script>
-</body>
-</html>
-"""
+_STATIC_DIR = Path(__file__).parent / "static"
+_INDEX_HTML = ""  # loaded lazily
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    """Serve the minimal built-in UI."""
-    return MINIMAL_HTML
+    """Serve the web UI."""
+    global _INDEX_HTML
+    if not _INDEX_HTML:
+        html_path = _STATIC_DIR / "index.html"
+        _INDEX_HTML = html_path.read_text(encoding="utf-8")
+    return _INDEX_HTML
