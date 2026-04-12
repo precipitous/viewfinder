@@ -11,8 +11,30 @@ Translation:
 
 import json
 import sys
+import threading
+import time
 
 from .models import TranscriptResult, TranscriptSnippet, TranscriptSource, VideoMeta
+
+# ---------------------------------------------------------------------------
+# Global YouTube rate limiter
+# ---------------------------------------------------------------------------
+
+_yt_lock = threading.Lock()
+_yt_last_request: float = 0.0
+_YT_MIN_INTERVAL = 2.0  # seconds between YouTube requests
+
+
+def _youtube_throttle():
+    """Enforce a minimum interval between YouTube API calls."""
+    global _yt_last_request
+    with _yt_lock:
+        now = time.monotonic()
+        elapsed = now - _yt_last_request
+        if elapsed < _YT_MIN_INTERVAL:
+            time.sleep(_YT_MIN_INTERVAL - elapsed)
+        _yt_last_request = time.monotonic()
+
 
 # ---------------------------------------------------------------------------
 # Strategy 1: youtube-transcript-api
@@ -31,6 +53,7 @@ def fetch_via_ytt(
         lang: Preferred transcript language.
         translate_to: If set, translate the transcript to this language code.
     """
+    _youtube_throttle()
     from youtube_transcript_api import YouTubeTranscriptApi
 
     ytt = YouTubeTranscriptApi()
@@ -91,6 +114,7 @@ def fetch_via_ytdlp(
     Downloads subtitles to a temp directory (letting yt-dlp handle the HTTP
     request with its own session/cookies), then parses the json3 file.
     """
+    _youtube_throttle()
     import tempfile
 
     import yt_dlp
@@ -309,6 +333,7 @@ def enrich_metadata(result: TranscriptResult) -> TranscriptResult:
         return result
 
     try:
+        _youtube_throttle()
         import yt_dlp
 
         url = f"https://www.youtube.com/watch?v={result.meta.video_id}"
@@ -338,6 +363,7 @@ def list_available_languages(video_id: str) -> list[dict[str, str]]:
 
     Returns list of dicts with 'code', 'name', and 'is_generated' keys.
     """
+    _youtube_throttle()
     from youtube_transcript_api import YouTubeTranscriptApi
 
     ytt = YouTubeTranscriptApi()
