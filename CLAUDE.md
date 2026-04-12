@@ -17,6 +17,7 @@ src/viewfinder/
   summarize.py      -- Pluggable LLM backends (Claude API, OpenAI-compatible) + prompts
   formatters.py     -- Output formatting (JSON, Markdown, plain text)
   storage.py        -- SQLite persistence (videos, transcripts, summaries, screenshots)
+  ingest.py         -- Bulk ingestion: playlists, channels, RSS feeds, webhooks, rate limiting
   cli.py            -- CLI entry point (installed as `viewfinder` command)
 ```
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "viewfinder"
-version = "0.3.0"
+version = "0.4.0"
 description = "YouTube video ingestion engine -- transcripts, screenshots, and AI summarization"
 readme = "README.md"
 license = "MIT"

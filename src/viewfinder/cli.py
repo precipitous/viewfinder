@@ -3,6 +3,7 @@
 import argparse
 import sys
 import textwrap
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -64,6 +65,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("video", nargs="?", help="YouTube URL or video ID")
     p.add_argument("--batch", type=str, help="File with one URL/ID per line for batch processing")
+    p.add_argument("--playlist", type=str, help="YouTube playlist URL to ingest all videos")
+    p.add_argument("--channel", type=str, help="YouTube channel URL to ingest latest videos")
+    p.add_argument(
+        "--channel-limit",
+        type=int,
+        default=10,
+        help="Max videos to fetch from a channel (default: 10)",
+    )
+    p.add_argument(
+        "--feed",
+        type=str,
+        help="YouTube channel ID for RSS feed monitoring (lightweight, last ~15 videos)",
+    )
+    p.add_argument(
+        "--webhook-url", type=str, help="URL to POST JSON notifications on new summaries"
+    )
+    p.add_argument(
+        "--rate-limit",
+        type=float,
+        default=2.0,
+        help="Seconds between YouTube requests in bulk modes (default: 2.0)",
+    )
     p.add_argument("--lang", default="en", help="Preferred transcript language (default: en)")
     p.add_argument(
         "--translate-to",
@@ -378,7 +401,8 @@ def main():
         store.close()
         sys.exit(0)
 
-    if not args.video and not args.batch:
+    has_input = args.video or args.batch or args.playlist or args.channel or args.feed
+    if not has_input:
         store.close()
         parser.print_help()
         sys.exit(1)
@@ -390,39 +414,107 @@ def main():
             file=sys.stderr,
         )
 
-    # Collect inputs
+    # Collect video inputs from all sources
     videos: list[str] = []
+    log = (lambda msg: print(msg, file=sys.stderr)) if not args.quiet else (lambda _: None)
+
+    if args.playlist:
+        from .ingest import extract_playlist_video_ids
+
+        ids = extract_playlist_video_ids(args.playlist, verbose=not args.quiet)
+        videos.extend(ids)
+        log(f"Playlist: {len(ids)} videos queued")
+
+    if args.channel:
+        from .ingest import extract_channel_video_ids
+
+        ids = extract_channel_video_ids(
+            args.channel, limit=args.channel_limit, verbose=not args.quiet
+        )
+        videos.extend(ids)
+        log(f"Channel: {len(ids)} videos queued")
+
+    if args.feed:
+        from .ingest import fetch_feed_video_ids
+
+        ids = fetch_feed_video_ids(args.feed, verbose=not args.quiet)
+        videos.extend(ids)
+        log(f"Feed: {len(ids)} videos queued")
+
     if args.batch:
         batch_path = Path(args.batch)
         if not batch_path.exists():
             print(f"Error: Batch file not found: {args.batch}", file=sys.stderr)
             store.close()
             sys.exit(1)
-        videos = [
+        batch_ids = [
             line.strip()
             for line in batch_path.read_text().splitlines()
             if line.strip() and not line.strip().startswith("#")
         ]
-        if not args.quiet:
-            print(f"Batch mode: {len(videos)} videos to process", file=sys.stderr)
-    else:
-        videos = [args.video]
+        videos.extend(batch_ids)
+        log(f"Batch file: {len(batch_ids)} videos queued")
+
+    if args.video:
+        videos.append(args.video)
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique_videos: list[str] = []
+    for v in videos:
+        if v not in seen:
+            seen.add(v)
+            unique_videos.append(v)
+    videos = unique_videos
+
+    if not videos:
+        print("No videos to process.", file=sys.stderr)
+        store.close()
+        sys.exit(0)
+
+    log(f"Processing {len(videos)} video(s)...")
 
     ext_map = {"json": "json", "md": "md", "text": "txt"}
     ext = ext_map[args.output_format]
 
-    for video_input in videos:
+    # Rate limiter for bulk modes
+    from .ingest import RateLimiter
+
+    limiter = RateLimiter(delay=args.rate_limit) if len(videos) > 1 else None
+
+    for i, video_input in enumerate(videos):
         try:
             output = process_video(video_input, args, store=store)
 
             if args.output_dir:
-                video_id = extract_video_id(video_input)
-                save_output(output, video_id, args.output_dir, ext)
+                vid = extract_video_id(video_input)
+                save_output(output, vid, args.output_dir, ext)
             else:
                 print(output)
+
+            # Webhook notification
+            if args.webhook_url and not args.transcript_only:
+                from .ingest import send_webhook
+
+                vid = extract_video_id(video_input)
+                send_webhook(
+                    args.webhook_url,
+                    {"event": "summary_created", "video_id": vid},
+                    verbose=not args.quiet,
+                )
+
+            if limiter:
+                limiter.on_success()
+                if i < len(videos) - 1:
+                    limiter.wait()
+
         except Exception as e:
             print(f"\nError processing {video_input}: {e}", file=sys.stderr)
-            if len(videos) == 1:
+            if limiter and limiter.should_retry:
+                wait = limiter.on_failure()
+                log(f"  [retry] Backing off {wait:.1f}s...")
+                time.sleep(wait)
+            elif len(videos) == 1:
                 store.close()
                 sys.exit(1)
 

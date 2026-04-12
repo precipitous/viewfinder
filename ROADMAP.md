@@ -37,12 +37,13 @@
 
 ## Phase 3 -- Ingest Automation
 
-- [ ] Playlist ingestion (all videos in a playlist)
-- [ ] Channel ingestion (latest N videos from a channel)
-- [ ] RSS/Atom feed monitoring; auto-ingest new uploads
-- [ ] Webhook notifications on new summaries
+- [x] Playlist ingestion (--playlist URL)
+- [x] Channel ingestion (--channel URL --channel-limit N)
+- [x] RSS/Atom feed monitoring (--feed CHANNEL_ID)
+- [x] Webhook notifications (--webhook-url URL)
+- [x] Rate limiting and retry logic (--rate-limit N, exponential backoff)
+- [x] Input deduplication across all sources
 - [ ] Cron/scheduler integration
-- [ ] Rate limiting and retry logic for YouTube
 
 ## Phase 4 -- Web UI
 
