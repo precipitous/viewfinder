@@ -63,3 +63,6 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "network: tests that require internet access (may fail from cloud IPs)",
+]

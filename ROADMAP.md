@@ -12,10 +12,10 @@
 - [x] Batch processing from file
 - [x] Output directory support
 - [x] Unit tests for parsing, models, formatters
-- [ ] Integration tests (network-dependent, tagged)
-- [ ] CI via GitHub Actions
+- [x] Integration tests (network-dependent, tagged)
+- [x] CI via GitHub Actions
 
-## Phase 1.5 -- LLM Video Ingestion (current)
+## Phase 1.5 -- LLM Video Ingestion
 
 - [x] Transcript translation to any language (via YouTube API)
 - [x] List available transcript languages (--list-languages)
@@ -25,7 +25,7 @@
 - [x] Combined ingest formatters (JSON, Markdown)
 - [x] Unit tests for screenshots, translation, ingest models
 
-## Phase 2 -- Persistence & Local LLM
+## Phase 2 -- Persistence & Local LLM (current)
 
 - [ ] SQLite storage layer (videos, transcripts, summaries)
 - [ ] Deduplication; skip re-fetching if transcript exists
