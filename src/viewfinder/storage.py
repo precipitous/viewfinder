@@ -76,9 +76,39 @@ CREATE TABLE IF NOT EXISTS screenshots (
     created_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS api_keys (
+    key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    rate_limit_rpm INTEGER NOT NULL DEFAULT 30,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS usage_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_key TEXT NOT NULL REFERENCES api_keys(key),
+    endpoint TEXT NOT NULL,
+    video_id TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS custom_prompts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_key TEXT NOT NULL REFERENCES api_keys(key),
+    name TEXT NOT NULL,
+    template TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(api_key, name)
+);
+
 CREATE INDEX IF NOT EXISTS idx_transcripts_video ON transcripts(video_id);
 CREATE INDEX IF NOT EXISTS idx_summaries_video ON summaries(video_id);
 CREATE INDEX IF NOT EXISTS idx_screenshots_video ON screenshots(video_id);
+CREATE INDEX IF NOT EXISTS idx_usage_log_key ON usage_log(api_key);
+CREATE INDEX IF NOT EXISTS idx_usage_log_time ON usage_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_custom_prompts_key ON custom_prompts(api_key);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(
     video_id, full_text, content=transcripts, content_rowid=id
@@ -424,3 +454,117 @@ class Storage:
             (query, limit),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # API keys
+    # ------------------------------------------------------------------
+
+    def create_api_key(self, name: str, is_admin: bool = False, rate_limit_rpm: int = 30) -> str:
+        """Create a new API key. Returns the key string."""
+        import secrets
+
+        key = f"vf-{secrets.token_hex(24)}"
+        self.conn.execute(
+            "INSERT INTO api_keys (key, name, is_admin, rate_limit_rpm) VALUES (?, ?, ?, ?)",
+            (key, name, int(is_admin), rate_limit_rpm),
+        )
+        self.conn.commit()
+        return key
+
+    def get_api_key(self, key: str) -> dict | None:
+        """Look up an API key. Returns dict or None."""
+        row = self.conn.execute("SELECT * FROM api_keys WHERE key = ?", (key,)).fetchone()
+        return dict(row) if row else None
+
+    def list_api_keys(self) -> list[dict]:
+        """List all API keys (admin operation)."""
+        rows = self.conn.execute(
+            "SELECT key, name, is_admin, rate_limit_rpm, created_at FROM api_keys"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_api_key(self, key: str) -> bool:
+        """Delete an API key. Returns True if it existed."""
+        cursor = self.conn.execute("DELETE FROM api_keys WHERE key = ?", (key,))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Usage logging
+    # ------------------------------------------------------------------
+
+    def log_usage(
+        self,
+        api_key: str,
+        endpoint: str,
+        video_id: str | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+    ):
+        """Log an API request for usage tracking."""
+        self.conn.execute(
+            """INSERT INTO usage_log (api_key, endpoint, video_id, input_tokens, output_tokens)
+               VALUES (?, ?, ?, ?, ?)""",
+            (api_key, endpoint, video_id, input_tokens, output_tokens),
+        )
+        self.conn.commit()
+
+    def get_usage(self, api_key: str) -> dict:
+        """Get usage stats for a specific API key."""
+        row = self.conn.execute(
+            """SELECT
+                 COUNT(*) as total_requests,
+                 COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+                 COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+                 COUNT(DISTINCT video_id) as unique_videos
+               FROM usage_log WHERE api_key = ?""",
+            (api_key,),
+        ).fetchone()
+        return dict(row)
+
+    def get_request_count_last_minute(self, api_key: str) -> int:
+        """Count requests in the last 60 seconds for rate limiting."""
+        row = self.conn.execute(
+            """SELECT COUNT(*) as n FROM usage_log
+               WHERE api_key = ? AND created_at > datetime('now', '-1 minute')""",
+            (api_key,),
+        ).fetchone()
+        return row["n"]
+
+    # ------------------------------------------------------------------
+    # Custom prompt templates
+    # ------------------------------------------------------------------
+
+    def save_custom_prompt(self, api_key: str, name: str, template: str):
+        """Save or update a custom prompt template."""
+        self.conn.execute(
+            """INSERT INTO custom_prompts (api_key, name, template) VALUES (?, ?, ?)
+               ON CONFLICT(api_key, name) DO UPDATE SET template = excluded.template""",
+            (api_key, name, template),
+        )
+        self.conn.commit()
+
+    def get_custom_prompt(self, api_key: str, name: str) -> str | None:
+        """Get a custom prompt template by name."""
+        row = self.conn.execute(
+            "SELECT template FROM custom_prompts WHERE api_key = ? AND name = ?",
+            (api_key, name),
+        ).fetchone()
+        return row["template"] if row else None
+
+    def list_custom_prompts(self, api_key: str) -> list[dict]:
+        """List custom prompt templates for an API key."""
+        rows = self.conn.execute(
+            "SELECT name, template, created_at FROM custom_prompts WHERE api_key = ?",
+            (api_key,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_custom_prompt(self, api_key: str, name: str) -> bool:
+        """Delete a custom prompt template."""
+        cursor = self.conn.execute(
+            "DELETE FROM custom_prompts WHERE api_key = ? AND name = ?",
+            (api_key, name),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0

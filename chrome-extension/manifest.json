@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Viewfinder - YouTube Summarizer",
+  "description": "One-click YouTube video summarization powered by Viewfinder",
+  "version": "0.5.0",
+  "permissions": ["activeTab", "storage"],
+  "host_permissions": ["https://www.youtube.com/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/watch*"],
+      "js": ["content.js"],
+      "css": ["content.css"]
+    }
+  ],
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

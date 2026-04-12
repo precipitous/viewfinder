@@ -112,6 +112,7 @@ class IngestRequest(BaseModel):
     backend: str = "claude"
     base_url: str | None = None
     transcript_only: bool = False
+    api_key: str | None = None
 
 
 class VideoSummary(BaseModel):
@@ -189,7 +190,12 @@ async def ingest_video(req: IngestRequest):
     }
 
     if not req.transcript_only:
-        from .summarize import summarize
+        from .summarize import PROMPTS, summarize
+
+        # Check for custom prompt template
+        custom_template = store.get_custom_prompt(req.api_key or "anonymous", req.prompt)
+        if custom_template:
+            PROMPTS[req.prompt] = custom_template
 
         await hub.broadcast({"event": "summarizing", "video_id": video_id})
 
@@ -214,6 +220,15 @@ async def ingest_video(req: IngestRequest):
         result["prompt_template"] = summary.prompt_template
         result["input_tokens"] = summary.input_tokens
         result["output_tokens"] = summary.output_tokens
+
+        # Log usage
+        store.log_usage(
+            api_key=req.api_key or "anonymous",
+            endpoint="/api/ingest",
+            video_id=video_id,
+            input_tokens=summary.input_tokens or 0,
+            output_tokens=summary.output_tokens or 0,
+        )
 
     await hub.broadcast({"event": "completed", "video_id": video_id})
     return result
@@ -289,6 +304,106 @@ async def cost_report():
         "summary": store.get_cost_summary(),
         "by_model": store.get_cost_by_model(),
     }
+
+
+# ---------------------------------------------------------------------------
+# API key management (admin only)
+# ---------------------------------------------------------------------------
+
+
+class CreateKeyRequest(BaseModel):
+    name: str
+    is_admin: bool = False
+    rate_limit_rpm: int = 30
+
+
+@app.post("/api/keys")
+async def create_api_key(req: CreateKeyRequest):
+    """Create a new API key. First key created becomes admin automatically."""
+
+    store = get_store()
+    # If no keys exist, first key is always admin
+    existing = store.list_api_keys()
+    is_admin = req.is_admin or len(existing) == 0
+    key = store.create_api_key(req.name, is_admin=is_admin, rate_limit_rpm=req.rate_limit_rpm)
+    return {"key": key, "name": req.name, "is_admin": is_admin}
+
+
+@app.get("/api/keys")
+async def list_api_keys():
+    """List all API keys (admin only)."""
+    store = get_store()
+    keys = store.list_api_keys()
+    # Mask key values for security -- show first 8 chars only
+    for k in keys:
+        k["key"] = k["key"][:11] + "..."
+    return keys
+
+
+@app.delete("/api/keys/{key}")
+async def delete_api_key(key: str):
+    """Delete an API key (admin only)."""
+    store = get_store()
+    if store.delete_api_key(key):
+        return {"deleted": True}
+    raise HTTPException(status_code=404, detail="API key not found")
+
+
+# ---------------------------------------------------------------------------
+# Usage metering
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/usage/{api_key}")
+async def get_usage(api_key: str):
+    """Get usage stats for an API key."""
+    store = get_store()
+    record = store.get_api_key(api_key)
+    if record is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+    usage = store.get_usage(api_key)
+    return {"api_key": api_key[:11] + "...", "name": record["name"], **usage}
+
+
+# ---------------------------------------------------------------------------
+# Custom prompt templates
+# ---------------------------------------------------------------------------
+
+
+class CustomPromptRequest(BaseModel):
+    name: str
+    template: str
+
+
+@app.post("/api/prompts")
+async def create_custom_prompt(req: CustomPromptRequest, api_key: str = Query(None)):
+    """Create or update a custom prompt template."""
+    store = get_store()
+    key = api_key or "anonymous"
+    store.save_custom_prompt(key, req.name, req.template)
+    return {"name": req.name, "saved": True}
+
+
+@app.get("/api/prompts")
+async def list_custom_prompts(api_key: str = Query(None)):
+    """List custom prompt templates."""
+    from .summarize import PROMPTS
+
+    store = get_store()
+    key = api_key or "anonymous"
+    custom = store.list_custom_prompts(key)
+    builtin = [{"name": k, "builtin": True} for k in PROMPTS]
+    return {"builtin": builtin, "custom": custom}
+
+
+@app.delete("/api/prompts/{name}")
+async def delete_custom_prompt(name: str, api_key: str = Query(None)):
+    """Delete a custom prompt template."""
+    store = get_store()
+    key = api_key or "anonymous"
+    if store.delete_custom_prompt(key, name):
+        return {"deleted": True}
+    raise HTTPException(status_code=404, detail="Prompt template not found")
 
 
 @app.get("/api/videos/{video_id}/export.md")

@@ -58,12 +58,13 @@
 
 ## Phase 5 -- Public Product
 
-- [ ] Landing page under Precipitous / LendSight branding
-- [ ] API rate limiting and auth (API keys)
-- [ ] Usage metering and billing
-- [ ] Chrome extension: one-click summarize from YouTube
+- [x] API key auth with per-key rate limiting (requests/minute)
+- [x] Usage metering per API key (requests, tokens, unique videos)
+- [x] Custom prompt templates per API key (CRUD via REST)
+- [x] Chrome extension: Manifest V3, "Summarize" button on YouTube pages
+- [ ] Landing page under Precipitous branding
+- [ ] Billing integration
 - [ ] Slack/Discord bot integration
-- [ ] Custom prompt templates per user
 
 ## Open Questions
 

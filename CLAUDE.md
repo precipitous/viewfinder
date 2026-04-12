@@ -16,9 +16,13 @@ src/viewfinder/
   screenshots.py    -- Video download (yt-dlp) + frame extraction (ffmpeg)
   summarize.py      -- Pluggable LLM backends (Claude API, OpenAI-compatible) + prompts
   formatters.py     -- Output formatting (JSON, Markdown, plain text)
-  storage.py        -- SQLite persistence (videos, transcripts, summaries, screenshots)
+  storage.py        -- SQLite persistence (videos, transcripts, summaries, API keys, usage, FTS)
   ingest.py         -- Bulk ingestion: playlists, channels, RSS feeds, webhooks, rate limiting
+  server.py         -- FastAPI web server (REST API + WebSocket + built-in SPA)
+  auth.py           -- API key authentication and rate limiting middleware
   cli.py            -- CLI entry point (installed as `viewfinder` command)
+
+chrome-extension/   -- Manifest V3 Chrome extension for one-click YouTube summarization
 ```
 
 ## Key Design Decisions
