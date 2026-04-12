@@ -11,7 +11,6 @@ Translation:
 
 import json
 import sys
-import urllib.request
 
 from .models import TranscriptResult, TranscriptSnippet, TranscriptSource, VideoMeta
 
@@ -87,76 +86,82 @@ def fetch_via_ytdlp(
     lang: str = "en",
     translate_to: str | None = None,
 ) -> TranscriptResult:
-    """Fallback method: yt-dlp subtitle extraction + metadata.
+    """Fallback method: yt-dlp subtitle download + metadata.
 
-    Note: yt-dlp does not support translation directly. If translate_to is
-    requested, we fetch the available transcript and note that translation
-    was not possible via this method (the caller can try ytt first).
+    Downloads subtitles to a temp directory (letting yt-dlp handle the HTTP
+    request with its own session/cookies), then parses the json3 file.
     """
+    import tempfile
+
     import yt_dlp
 
     url = f"https://www.youtube.com/watch?v={video_id}"
 
-    # If translation is requested, also request subs in the target language
     sub_langs = [lang, "en"]
     if translate_to and translate_to not in sub_langs:
         sub_langs.insert(0, translate_to)
 
-    ydl_opts = {
-        "writeautomaticsub": True,
-        "writesubtitles": True,
-        "subtitleslangs": sub_langs,
-        "subtitlesformat": "json3",
-        "skip_download": True,
-        "quiet": True,
-        "no_warnings": True,
-    }
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        outtmpl = f"{tmp_dir}/{video_id}.%(ext)s"
+        ydl_opts = {
+            "writeautomaticsub": True,
+            "writesubtitles": True,
+            "subtitleslangs": sub_langs,
+            "subtitlesformat": "json3",
+            "skip_download": True,
+            "outtmpl": outtmpl,
+            "quiet": True,
+            "no_warnings": True,
+            "cookiesfrombrowser": ("chrome",),
+        }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
 
-    meta = VideoMeta(
-        video_id=video_id,
-        title=info.get("title"),
-        channel=info.get("channel") or info.get("uploader"),
-        duration_seconds=info.get("duration"),
-        upload_date=info.get("upload_date"),
-        description=info.get("description"),
-    )
+        meta = VideoMeta(
+            video_id=video_id,
+            title=info.get("title"),
+            channel=info.get("channel") or info.get("uploader"),
+            duration_seconds=info.get("duration"),
+            upload_date=info.get("upload_date"),
+            description=info.get("description"),
+        )
 
-    # Prefer manual subs; fall back to auto-generated
-    subtitles = info.get("subtitles", {})
-    auto_captions = info.get("automatic_captions", {})
-    is_generated = False
-    sub_data = None
-    chosen_lang = lang
+        # Find the downloaded subtitle file
+        import glob
 
-    # Build language priority: translate_to first (if available), then original lang, then en
-    lang_priority = [lang, "en"]
-    if translate_to and translate_to not in lang_priority:
-        lang_priority.insert(0, translate_to)
+        sub_files = glob.glob(f"{tmp_dir}/*.json3")
+        is_generated = False
+        chosen_lang = lang
 
-    for source, gen_flag in [(subtitles, False), (auto_captions, True)]:
-        if sub_data:
-            break
-        for try_lang in lang_priority:
-            if try_lang in source:
-                for fmt in source[try_lang]:
-                    if fmt.get("ext") == "json3":
-                        sub_data = fmt
-                        chosen_lang = try_lang
-                        is_generated = gen_flag
-                        break
-                if sub_data:
-                    break
+        if not sub_files:
+            raise RuntimeError(f"No subtitles downloaded via yt-dlp for {video_id}")
 
-    if not sub_data:
-        raise RuntimeError(f"No subtitles found via yt-dlp for {video_id}")
+        # Pick the best file: prefer manual over auto, prefer requested lang
+        sub_file = sub_files[0]
+        for f in sub_files:
+            fname = f.lower()
+            if translate_to and translate_to in fname:
+                sub_file = f
+                chosen_lang = translate_to
+                break
+            if f".{lang}." in fname:
+                sub_file = f
+                chosen_lang = lang
+                break
 
-    # Fetch actual subtitle content
-    sub_url = sub_data["url"]
-    with urllib.request.urlopen(sub_url) as resp:
-        sub_json = json.loads(resp.read().decode("utf-8"))
+        # Detect if auto-generated
+        requested_subs = info.get("requested_subtitles", {})
+        for sub_lang, sub_info in requested_subs.items():
+            if sub_info and sub_info.get("ext") == "json3":
+                chosen_lang = sub_lang
+                # If it came from automatic_captions, it's generated
+                auto = info.get("automatic_captions", {})
+                is_generated = sub_lang in auto and sub_lang not in info.get("subtitles", {})
+                break
+
+        with open(sub_file) as f:
+            sub_json = json.load(f)
 
     events = sub_json.get("events", [])
     snippets = []
@@ -222,6 +227,7 @@ def fetch_via_whisper(
             "outtmpl": audio_path,
             "quiet": True,
             "no_warnings": True,
+            "cookiesfrombrowser": ("chrome",),
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",

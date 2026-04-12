@@ -161,15 +161,20 @@ async def ingest_video(req: IngestRequest):
         await hub.broadcast({"event": "fetching_transcript", "video_id": video_id})
 
         loop = asyncio.get_event_loop()
-        transcript = await loop.run_in_executor(
-            None,
-            lambda: fetch_transcript(
-                video_id,
-                lang=req.lang,
-                translate_to=req.translate_to,
-                verbose=False,
-            ),
-        )
+        try:
+            transcript = await loop.run_in_executor(
+                None,
+                lambda: fetch_transcript(
+                    video_id,
+                    lang=req.lang,
+                    translate_to=req.translate_to,
+                    verbose=False,
+                ),
+            )
+        except RuntimeError as e:
+            await hub.broadcast({"event": "error", "video_id": video_id, "detail": str(e)[:200]})
+            raise HTTPException(status_code=502, detail=str(e)[:500]) from e
+
         store.save_transcript(transcript)
 
     await hub.broadcast(
@@ -201,17 +206,21 @@ async def ingest_video(req: IngestRequest):
         await hub.broadcast({"event": "summarizing", "video_id": video_id})
 
         loop = asyncio.get_event_loop()
-        summary = await loop.run_in_executor(
-            None,
-            lambda: summarize(
-                transcript,
-                prompt_key=req.prompt,
-                model=req.model,
-                backend=req.backend,
-                base_url=req.base_url,
-                verbose=False,
-            ),
-        )
+        try:
+            summary = await loop.run_in_executor(
+                None,
+                lambda: summarize(
+                    transcript,
+                    prompt_key=req.prompt,
+                    model=req.model,
+                    backend=req.backend,
+                    base_url=req.base_url,
+                    verbose=False,
+                ),
+            )
+        except Exception as e:
+            await hub.broadcast({"event": "error", "video_id": video_id, "detail": str(e)[:200]})
+            raise HTTPException(status_code=502, detail=f"Summarization failed: {e!s:.500}") from e
 
         tid = store.save_transcript(transcript)
         store.save_summary(summary, tid)
