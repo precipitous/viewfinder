@@ -136,7 +136,6 @@ def fetch_via_ytdlp(
             "outtmpl": outtmpl,
             "quiet": True,
             "no_warnings": True,
-            "cookiesfrombrowser": ("chrome",),
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
