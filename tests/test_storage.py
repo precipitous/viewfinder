@@ -190,6 +190,25 @@ class TestListVideos:
         assert videos[0]["transcript_count"] == 1
 
 
+class TestSearchTranscripts:
+    def test_finds_match(self, store):
+        store.save_transcript(_make_transcript())
+        results = store.search_transcripts("Hello")
+        assert len(results) >= 1
+        assert results[0]["video_id"] == "test123"
+
+    def test_no_match(self, store):
+        store.save_transcript(_make_transcript())
+        results = store.search_transcripts("xyznonexistent")
+        assert len(results) == 0
+
+    def test_snippet_included(self, store):
+        store.save_transcript(_make_transcript())
+        results = store.search_transcripts("world")
+        assert len(results) >= 1
+        assert "snippet" in results[0]
+
+
 class TestContextManager:
     def test_context_manager(self, tmp_path):
         db_path = tmp_path / "ctx_test.db"

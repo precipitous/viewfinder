@@ -202,6 +202,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List all cached videos in the database, then exit",
     )
+    p.add_argument(
+        "--search",
+        type=str,
+        default=None,
+        help="Search transcripts for a query string, then exit",
+    )
+    p.add_argument(
+        "--export",
+        type=str,
+        default=None,
+        help="Export a cached video as Markdown (by video ID), then exit",
+    )
+
+    # Server
+    p.add_argument(
+        "--serve",
+        action="store_true",
+        help="Start the web UI server (FastAPI + built-in frontend)",
+    )
+    p.add_argument("--host", default="0.0.0.0", help="Server host (default: 0.0.0.0)")
+    p.add_argument("--port", type=int, default=8080, help="Server port (default: 8080)")
 
     return p
 
@@ -360,6 +381,15 @@ def main():
 
     store = Storage(db_path=args.db)
 
+    # Handle --serve
+    if args.serve:
+        import uvicorn
+
+        store.close()
+        print(f"Starting Viewfinder web UI on http://{args.host}:{args.port}", file=sys.stderr)
+        uvicorn.run("viewfinder.server:app", host=args.host, port=args.port, reload=False)
+        sys.exit(0)
+
     # Handle --cost-report
     if args.cost_report:
         print(_format_cost_report(store))
@@ -380,6 +410,50 @@ def main():
                     f"{v['video_id']:<15} {title:<40} "
                     f"{v['transcript_count']:>5} {v['summary_count']:>5}"
                 )
+        store.close()
+        sys.exit(0)
+
+    # Handle --search
+    if args.search:
+        results = store.search_transcripts(args.search)
+        if not results:
+            print(f"No results for: {args.search}")
+        else:
+            print(f"Found {len(results)} result(s) for: {args.search}\n")
+            for r in results:
+                title = r.get("title") or r["video_id"]
+                print(f"  {r['video_id']}  {title}")
+                print(f"    ...{r['snippet']}...")
+                print()
+        store.close()
+        sys.exit(0)
+
+    # Handle --export
+    if args.export:
+        from .formatters import to_ingest_markdown
+        from .models import IngestResult, SummaryResult
+
+        vid = args.export
+        transcript = store.get_transcript(vid)
+        if transcript is None:
+            print(f"Error: No transcript found for {vid}", file=sys.stderr)
+            store.close()
+            sys.exit(1)
+        summaries = store.get_summaries(vid)
+        summary_obj = None
+        if summaries:
+            s = summaries[0]
+            summary_obj = SummaryResult(
+                transcript=transcript,
+                summary=s["summary"],
+                model=s["model"],
+                prompt_template=s["prompt_template"],
+                input_tokens=s.get("input_tokens"),
+                output_tokens=s.get("output_tokens"),
+                generated_at=s.get("generated_at", ""),
+            )
+        ingest = IngestResult(transcript=transcript, summary=summary_obj)
+        print(to_ingest_markdown(ingest))
         store.close()
         sys.exit(0)
 

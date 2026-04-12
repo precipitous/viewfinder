@@ -47,12 +47,13 @@
 
 ## Phase 4 -- Web UI
 
-- [ ] FastAPI backend (REST + WebSocket for progress)
-- [ ] React frontend; paste URL, get summary
-- [ ] Search across ingested videos (full-text on transcripts)
+- [x] FastAPI backend (REST + WebSocket for progress)
+- [x] Built-in SPA frontend (paste URL, progress, search, video browser)
+- [x] Full-text search across transcripts (FTS5)
+- [x] Export to Markdown files (CLI --export and REST endpoint)
+- [x] CLI --search and --serve flags
 - [ ] Embedding generation for semantic search
 - [ ] Summary comparison view (side-by-side prompt templates)
-- [ ] Export to Notion / Google Docs / Markdown files
 - [ ] User accounts (if public-facing)
 
 ## Phase 5 -- Public Product

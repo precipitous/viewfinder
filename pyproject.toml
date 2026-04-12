@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "viewfinder"
-version = "0.4.0"
+version = "0.5.0"
 description = "YouTube video ingestion engine -- transcripts, screenshots, and AI summarization"
 readme = "README.md"
 license = "MIT"
@@ -60,6 +60,10 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Inline HTML/JS template has long lines
+"src/viewfinder/server.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

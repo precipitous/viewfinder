@@ -79,6 +79,30 @@ CREATE TABLE IF NOT EXISTS screenshots (
 CREATE INDEX IF NOT EXISTS idx_transcripts_video ON transcripts(video_id);
 CREATE INDEX IF NOT EXISTS idx_summaries_video ON summaries(video_id);
 CREATE INDEX IF NOT EXISTS idx_screenshots_video ON screenshots(video_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(
+    video_id, full_text, content=transcripts, content_rowid=id
+);
+"""
+
+# Triggers to keep FTS index in sync with transcripts table
+FTS_TRIGGERS = """\
+CREATE TRIGGER IF NOT EXISTS transcripts_ai AFTER INSERT ON transcripts BEGIN
+    INSERT INTO transcripts_fts(rowid, video_id, full_text)
+    VALUES (new.id, new.video_id, new.full_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS transcripts_ad AFTER DELETE ON transcripts BEGIN
+    INSERT INTO transcripts_fts(transcripts_fts, rowid, video_id, full_text)
+    VALUES ('delete', old.id, old.video_id, old.full_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS transcripts_au AFTER UPDATE ON transcripts BEGIN
+    INSERT INTO transcripts_fts(transcripts_fts, rowid, video_id, full_text)
+    VALUES ('delete', old.id, old.video_id, old.full_text);
+    INSERT INTO transcripts_fts(rowid, video_id, full_text)
+    VALUES (new.id, new.video_id, new.full_text);
+END;
 """
 
 
@@ -95,7 +119,7 @@ class Storage:
     @property
     def conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
+            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
@@ -104,6 +128,7 @@ class Storage:
 
     def _init_schema(self):
         self.conn.executescript(SCHEMA)
+        self.conn.executescript(FTS_TRIGGERS)
         row = self.conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             self.conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
@@ -370,3 +395,32 @@ class Storage:
         """Return total number of stored videos."""
         row = self.conn.execute("SELECT COUNT(*) as n FROM videos").fetchone()
         return row["n"]
+
+    # ------------------------------------------------------------------
+    # Full-text search
+    # ------------------------------------------------------------------
+
+    def search_transcripts(self, query: str, limit: int = 20) -> list[dict]:
+        """Full-text search across transcript content.
+
+        Returns list of dicts with video_id, title, snippet (highlighted match),
+        and relevance rank.
+        """
+        rows = self.conn.execute(
+            """SELECT
+                 t.video_id,
+                 v.title,
+                 v.channel,
+                 t.language,
+                 snippet(transcripts_fts, 1, '<b>', '</b>', '...', 32) as snippet,
+                 rank
+               FROM transcripts_fts
+               JOIN transcripts t ON t.id = transcripts_fts.rowid
+               LEFT JOIN videos v ON v.video_id = t.video_id
+               WHERE transcripts_fts MATCH ?
+               ORDER BY rank
+               LIMIT ?
+            """,
+            (query, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
