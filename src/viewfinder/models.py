@@ -8,6 +8,7 @@ from enum import Enum
 class TranscriptSource(str, Enum):
     YTT_API = "youtube-transcript-api"
     YT_DLP = "yt-dlp"
+    WHISPER = "whisper"
     MANUAL = "manual"
 
 

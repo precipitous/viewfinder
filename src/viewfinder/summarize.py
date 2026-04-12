@@ -1,7 +1,13 @@
-"""AI summarization via Claude (or compatible LLM backends)."""
+"""AI summarization via pluggable LLM backends.
+
+Backends:
+    - claude: Anthropic Claude API (default)
+    - openai: OpenAI-compatible API (works with local Qwen R1, vLLM, ollama, etc.)
+"""
 
 import sys
 import textwrap
+from dataclasses import dataclass
 
 from .models import SummaryResult, TranscriptResult
 
@@ -97,8 +103,109 @@ def format_duration(seconds: int | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Summarization
+# LLM Backend Interface
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class LLMResponse:
+    """Standardized response from any LLM backend."""
+
+    text: str
+    model: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+
+def _call_claude(
+    prompt: str,
+    model: str,
+    max_tokens: int,
+    api_key: str | None,
+) -> LLMResponse:
+    """Call Anthropic Claude API."""
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = "\n".join(block.text for block in response.content if hasattr(block, "text"))
+    return LLMResponse(
+        text=text,
+        model=model,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+    )
+
+
+def _call_openai_compat(
+    prompt: str,
+    model: str,
+    max_tokens: int,
+    api_key: str | None,
+    base_url: str | None = None,
+) -> LLMResponse:
+    """Call an OpenAI-compatible API (vLLM, ollama, Qwen R1, etc.)."""
+    import httpx
+
+    url = (base_url or "http://localhost:8000") + "/v1/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    resp = httpx.post(url, json=payload, headers=headers, timeout=300)
+    resp.raise_for_status()
+    data = resp.json()
+
+    text = data["choices"][0]["message"]["content"]
+    usage = data.get("usage", {})
+    return LLMResponse(
+        text=text,
+        model=model,
+        input_tokens=usage.get("prompt_tokens"),
+        output_tokens=usage.get("completion_tokens"),
+    )
+
+
+# Backend registry
+BACKENDS = {
+    "claude": _call_claude,
+    "openai": _call_openai_compat,
+}
+
+
+def list_backends() -> list[str]:
+    """Return available backend names."""
+    return list(BACKENDS.keys())
+
+
+# ---------------------------------------------------------------------------
+# Summarization (public API)
+# ---------------------------------------------------------------------------
+
+
+def _build_prompt(transcript: TranscriptResult, prompt_key: str) -> str:
+    """Build the LLM prompt from a template and transcript."""
+    template = PROMPTS.get(prompt_key, PROMPTS["default"])
+    full_text = transcript.full_text
+    max_chars = 300_000
+    if len(full_text) > max_chars:
+        full_text = full_text[:max_chars] + "\n\n[...transcript truncated...]"
+    return template.format(
+        title=transcript.meta.title or "Unknown",
+        channel=transcript.meta.channel or "Unknown",
+        duration=format_duration(transcript.meta.duration_seconds),
+        transcript=full_text,
+    )
 
 
 def summarize(
@@ -107,56 +214,41 @@ def summarize(
     model: str = "claude-sonnet-4-20250514",
     max_tokens: int = 4096,
     api_key: str | None = None,
+    backend: str = "claude",
+    base_url: str | None = None,
     verbose: bool = True,
 ) -> SummaryResult:
-    """Summarize a transcript using Claude.
+    """Summarize a transcript using a pluggable LLM backend.
 
     Args:
         transcript: The transcript to summarize.
         prompt_key: Key into PROMPTS dict. Use list_prompts() to see options.
-        model: Anthropic model identifier.
+        model: Model identifier (meaning depends on backend).
         max_tokens: Max output tokens.
-        api_key: Anthropic API key; falls back to ANTHROPIC_API_KEY env var.
+        api_key: API key for the backend.
+        backend: LLM backend to use ("claude" or "openai").
+        base_url: Base URL for OpenAI-compatible backends.
         verbose: Print progress to stderr.
     """
-    import anthropic
-
     log = (lambda msg: print(msg, file=sys.stderr)) if verbose else (lambda _: None)
-    client = anthropic.Anthropic(api_key=api_key)
 
-    template = PROMPTS.get(prompt_key, PROMPTS["default"])
+    prompt = _build_prompt(transcript, prompt_key)
+    log(f"  [llm] Sending {len(transcript.full_text):,} chars to {model} via {backend}...")
 
-    # Truncate if extremely long (~75k tokens is safe for Claude)
-    full_text = transcript.full_text
-    max_chars = 300_000
-    if len(full_text) > max_chars:
-        full_text = full_text[:max_chars] + "\n\n[...transcript truncated...]"
-
-    prompt = template.format(
-        title=transcript.meta.title or "Unknown",
-        channel=transcript.meta.channel or "Unknown",
-        duration=format_duration(transcript.meta.duration_seconds),
-        transcript=full_text,
-    )
-
-    log(f"  [llm] Sending {len(full_text):,} chars to {model}...")
-
-    response = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    summary_text = "\n".join(block.text for block in response.content if hasattr(block, "text"))
+    if backend == "openai":
+        response = _call_openai_compat(prompt, model, max_tokens, api_key, base_url)
+    else:
+        response = _call_claude(prompt, model, max_tokens, api_key)
 
     result = SummaryResult(
         transcript=transcript,
-        summary=summary_text,
-        model=model,
+        summary=response.text,
+        model=response.model,
         prompt_template=prompt_key,
-        input_tokens=response.usage.input_tokens,
-        output_tokens=response.usage.output_tokens,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
     )
 
-    log(f"  [done] Summary generated ({result.output_tokens} output tokens)")
+    tokens_msg = f"{result.output_tokens} output tokens" if result.output_tokens else "done"
+    log(f"  [done] Summary generated ({tokens_msg})")
     return result

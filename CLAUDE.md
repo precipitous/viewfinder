@@ -12,10 +12,11 @@ src/viewfinder/
   models.py         -- Data models (TranscriptSnippet, VideoMeta, TranscriptResult,
                        Screenshot, ScreenshotResult, IngestResult, SummaryResult)
   parsing.py        -- YouTube URL/ID extraction
-  transcript.py     -- Fallback chain: youtube-transcript-api -> yt-dlp; translation support
+  transcript.py     -- Fallback chain: youtube-transcript-api -> yt-dlp -> whisper
   screenshots.py    -- Video download (yt-dlp) + frame extraction (ffmpeg)
-  summarize.py      -- Claude API integration + prompt templates
+  summarize.py      -- Pluggable LLM backends (Claude API, OpenAI-compatible) + prompts
   formatters.py     -- Output formatting (JSON, Markdown, plain text)
+  storage.py        -- SQLite persistence (videos, transcripts, summaries, screenshots)
   cli.py            -- CLI entry point (installed as `viewfinder` command)
 ```
 

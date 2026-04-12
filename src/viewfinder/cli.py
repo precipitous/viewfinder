@@ -103,6 +103,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep the downloaded video file after screenshot extraction",
     )
 
+    # Whisper options
+    p.add_argument(
+        "--whisper",
+        action="store_true",
+        help="Enable Whisper fallback for videos without captions (requires openai-whisper)",
+    )
+    p.add_argument(
+        "--whisper-model",
+        default="base",
+        choices=["tiny", "base", "small", "medium", "large"],
+        help="Whisper model size (default: base)",
+    )
+
     p.add_argument(
         "--prompt",
         choices=list(PROMPTS.keys()),
@@ -112,7 +125,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--model",
         default="claude-sonnet-4-20250514",
-        help="Claude model for summarization",
+        help="Model for summarization (default: claude-sonnet-4-20250514)",
+    )
+    p.add_argument(
+        "--backend",
+        choices=["claude", "openai"],
+        default="claude",
+        help="LLM backend: claude (Anthropic API) or openai (OpenAI-compatible)",
+    )
+    p.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help="Base URL for OpenAI-compatible backend (e.g., http://trypticon:8000)",
     )
     p.add_argument(
         "--format",
@@ -132,27 +157,65 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--quiet", action="store_true", help="Suppress progress output")
 
+    # Storage / persistence
+    p.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Skip the local DB cache; always fetch fresh from YouTube",
+    )
+    p.add_argument(
+        "--db",
+        type=str,
+        default=None,
+        help="Path to SQLite database (default: ~/.viewfinder/viewfinder.db)",
+    )
+    p.add_argument(
+        "--cost-report",
+        action="store_true",
+        help="Show cumulative token usage and cost report, then exit",
+    )
+    p.add_argument(
+        "--list-videos",
+        action="store_true",
+        help="List all cached videos in the database, then exit",
+    )
+
     return p
 
 
-def process_video(video_input: str, args: argparse.Namespace) -> str:
+def process_video(video_input: str, args: argparse.Namespace, store=None) -> str:
     """Process a single video. Returns formatted output string."""
     video_id = extract_video_id(video_input)
     verbose = not args.quiet
+    target_lang = args.translate_to or args.lang
 
     if verbose:
         print(f"\n{'=' * 60}", file=sys.stderr)
         print(f"Processing: {video_id}", file=sys.stderr)
         print(f"{'=' * 60}", file=sys.stderr)
 
-    # Fetch transcript
-    transcript = fetch_transcript(
-        video_id,
-        lang=args.lang,
-        translate_to=args.translate_to,
-        enrich=not args.no_enrich,
-        verbose=verbose,
-    )
+    # Check cache first
+    transcript = None
+    if store and not args.no_cache:
+        transcript = store.get_transcript(video_id, language=target_lang)
+        if transcript and verbose:
+            words = transcript.word_count
+            print(f"  [cache] Found cached transcript ({words:,} words)", file=sys.stderr)
+
+    # Fetch if not cached
+    if transcript is None:
+        transcript = fetch_transcript(
+            video_id,
+            lang=args.lang,
+            translate_to=args.translate_to,
+            enrich=not args.no_enrich,
+            whisper=args.whisper,
+            whisper_model=args.whisper_model,
+            verbose=verbose,
+        )
+        # Save to cache
+        if store:
+            store.save_transcript(transcript)
 
     if verbose:
         info_parts = [
@@ -179,6 +242,8 @@ def process_video(video_input: str, args: argparse.Namespace) -> str:
             keep_video=args.keep_video,
             verbose=verbose,
         )
+        if store:
+            store.save_screenshots(screenshot_result)
 
     # Transcript-only mode
     if args.transcript_only:
@@ -204,8 +269,13 @@ def process_video(video_input: str, args: argparse.Namespace) -> str:
         prompt_key=args.prompt,
         model=args.model,
         api_key=args.api_key,
+        backend=args.backend,
+        base_url=args.base_url,
         verbose=verbose,
     )
+    if store:
+        transcript_id = store.save_transcript(transcript)
+        store.save_summary(summary, transcript_id)
 
     if args.screenshots and screenshot_result:
         ingest = IngestResult(transcript=transcript, screenshots=screenshot_result, summary=summary)
@@ -234,14 +304,67 @@ def save_output(content: str, video_id: str, output_dir: str, ext: str):
     print(f"  [saved] {filepath}", file=sys.stderr)
 
 
+def _format_cost_report(store) -> str:
+    """Format a cost report from the storage layer."""
+    summary = store.get_cost_summary()
+    by_model = store.get_cost_by_model()
+
+    lines = [
+        "Viewfinder Cost Report",
+        "=" * 40,
+        f"Total summaries:  {summary['total_summaries']}",
+        f"Total tokens:     {summary['total_tokens']:,}",
+        f"  Input tokens:   {summary['total_input_tokens']:,}",
+        f"  Output tokens:  {summary['total_output_tokens']:,}",
+    ]
+
+    if by_model:
+        lines.extend(["", "By model:"])
+        for row in by_model:
+            total = row["input_tokens"] + row["output_tokens"]
+            lines.append(f"  {row['model']}: {row['count']} runs, {total:,} tokens")
+
+    lines.extend(["", f"Videos in DB:     {store.video_count()}"])
+    return "\n".join(lines)
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    # Initialize storage
+    from .storage import Storage
+
+    store = Storage(db_path=args.db)
+
+    # Handle --cost-report
+    if args.cost_report:
+        print(_format_cost_report(store))
+        store.close()
+        sys.exit(0)
+
+    # Handle --list-videos
+    if args.list_videos:
+        videos_list = store.list_videos()
+        if not videos_list:
+            print("No videos in database.")
+        else:
+            print(f"{'VIDEO ID':<15} {'TITLE':<40} {'TRANSCRIPTS':>5} {'SUMMARIES':>5}")
+            print("-" * 70)
+            for v in videos_list:
+                title = (v["title"] or "Unknown")[:38]
+                print(
+                    f"{v['video_id']:<15} {title:<40} "
+                    f"{v['transcript_count']:>5} {v['summary_count']:>5}"
+                )
+        store.close()
+        sys.exit(0)
 
     # Handle --list-languages
     if args.list_languages:
         if not args.video:
             print("Error: --list-languages requires a video URL or ID", file=sys.stderr)
+            store.close()
             sys.exit(1)
         from .transcript import list_available_languages
 
@@ -252,9 +375,11 @@ def main():
             gen_tag = " (auto-generated)" if lang["is_generated"] else ""
             trans_tag = " [translatable]" if lang["translatable"] else ""
             print(f"  {lang['code']:>5}  {lang['name']}{gen_tag}{trans_tag}")
+        store.close()
         sys.exit(0)
 
     if not args.video and not args.batch:
+        store.close()
         parser.print_help()
         sys.exit(1)
 
@@ -271,6 +396,7 @@ def main():
         batch_path = Path(args.batch)
         if not batch_path.exists():
             print(f"Error: Batch file not found: {args.batch}", file=sys.stderr)
+            store.close()
             sys.exit(1)
         videos = [
             line.strip()
@@ -287,7 +413,7 @@ def main():
 
     for video_input in videos:
         try:
-            output = process_video(video_input, args)
+            output = process_video(video_input, args, store=store)
 
             if args.output_dir:
                 video_id = extract_video_id(video_input)
@@ -297,10 +423,13 @@ def main():
         except Exception as e:
             print(f"\nError processing {video_input}: {e}", file=sys.stderr)
             if len(videos) == 1:
+                store.close()
                 sys.exit(1)
 
     if not args.quiet:
         print(f"\nDone. Processed {len(videos)} video(s).", file=sys.stderr)
+
+    store.close()
 
 
 if __name__ == "__main__":

@@ -25,15 +25,15 @@
 - [x] Combined ingest formatters (JSON, Markdown)
 - [x] Unit tests for screenshots, translation, ingest models
 
-## Phase 2 -- Persistence & Local LLM (current)
+## Phase 2 -- Persistence & Local LLM
 
-- [ ] SQLite storage layer (videos, transcripts, summaries)
-- [ ] Deduplication; skip re-fetching if transcript exists
-- [ ] Cost tracking (tokens in/out per summary, cumulative)
-- [ ] Pluggable LLM backend interface
-- [ ] Local Qwen R1 support via OpenAI-compatible API on Trypticon
+- [x] SQLite storage layer (videos, transcripts, summaries, screenshots)
+- [x] Deduplication; skip re-fetching if transcript exists
+- [x] Cost tracking (tokens in/out per summary, cumulative --cost-report)
+- [x] Pluggable LLM backend interface (claude + openai-compatible)
+- [x] Local Qwen R1 support via OpenAI-compatible API on Trypticon
+- [x] Whisper fallback for videos without captions (~15% of YouTube)
 - [ ] Benchmark: Claude Sonnet vs Haiku vs Qwen R1 on summary quality/cost
-- [ ] Whisper fallback for videos without captions (~15% of YouTube)
 
 ## Phase 3 -- Ingest Automation
 

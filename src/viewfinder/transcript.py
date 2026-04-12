@@ -182,6 +182,117 @@ def fetch_via_ytdlp(
 
 
 # ---------------------------------------------------------------------------
+# Strategy 3: Whisper (for videos without captions)
+# ---------------------------------------------------------------------------
+
+
+def fetch_via_whisper(
+    video_id: str,
+    lang: str = "en",
+    whisper_model: str = "base",
+) -> TranscriptResult:
+    """Fallback method: download audio via yt-dlp, transcribe with Whisper.
+
+    Requires the `whisper` CLI to be installed (pip install openai-whisper).
+    This is the last resort for videos with no captions at all.
+
+    Args:
+        video_id: YouTube video ID.
+        lang: Language hint for Whisper.
+        whisper_model: Whisper model size (tiny, base, small, medium, large).
+    """
+    import json as _json
+    import shutil
+    import subprocess
+    import tempfile
+
+    import yt_dlp
+
+    whisper_bin = shutil.which("whisper")
+    if not whisper_bin:
+        raise RuntimeError("whisper CLI not found. Install with: pip install openai-whisper")
+
+    url = f"https://www.youtube.com/watch?v={video_id}"
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Download audio only
+        audio_path = f"{tmp_dir}/{video_id}.%(ext)s"
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": audio_path,
+            "quiet": True,
+            "no_warnings": True,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+
+        meta = VideoMeta(
+            video_id=video_id,
+            title=info.get("title"),
+            channel=info.get("channel") or info.get("uploader"),
+            duration_seconds=info.get("duration"),
+            upload_date=info.get("upload_date"),
+            description=info.get("description"),
+        )
+
+        audio_file = f"{tmp_dir}/{video_id}.mp3"
+
+        # Run whisper CLI
+        result = subprocess.run(
+            [
+                whisper_bin,
+                audio_file,
+                "--model",
+                whisper_model,
+                "--language",
+                lang,
+                "--output_format",
+                "json",
+                "--output_dir",
+                tmp_dir,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"Whisper failed: {result.stderr[:500]}")
+
+        # Parse whisper JSON output
+        json_file = f"{tmp_dir}/{video_id}.json"
+        with open(json_file) as f:
+            whisper_data = _json.load(f)
+
+    segments = whisper_data.get("segments", [])
+    snippets = [
+        TranscriptSnippet(
+            text=seg["text"].strip(),
+            start=seg["start"],
+            duration=seg["end"] - seg["start"],
+        )
+        for seg in segments
+        if seg.get("text", "").strip()
+    ]
+
+    return TranscriptResult(
+        meta=meta,
+        snippets=snippets,
+        source=TranscriptSource.WHISPER,
+        language=lang,
+        is_generated=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Metadata Enrichment
 # ---------------------------------------------------------------------------
 
@@ -244,6 +355,8 @@ def fetch_transcript(
     lang: str = "en",
     translate_to: str | None = None,
     enrich: bool = True,
+    whisper: bool = False,
+    whisper_model: str = "base",
     verbose: bool = True,
 ) -> TranscriptResult:
     """Fetch transcript using fallback chain.
@@ -251,23 +364,27 @@ def fetch_transcript(
     Order:
         1. youtube-transcript-api (fast, lightweight; supports translation)
         2. yt-dlp (heavier, broader compatibility; limited translation)
+        3. Whisper (downloads audio + local transcription; opt-in or auto-fallback)
 
     Args:
         video_id: YouTube video ID.
         lang: Preferred source transcript language.
         translate_to: If set, translate transcript to this language code.
         enrich: Enrich metadata via yt-dlp if sparse.
+        whisper: If True, include Whisper in the fallback chain.
+        whisper_model: Whisper model size (tiny/base/small/medium/large).
         verbose: Print progress to stderr.
     """
     log = (lambda msg: print(msg, file=sys.stderr)) if verbose else (lambda _: None)
     errors: list[str] = []
+    n_strategies = 3 if whisper else 2
 
     if translate_to:
         log(f"  [info] Translation requested: {lang} -> {translate_to}")
 
     # Strategy 1
     try:
-        log("  [1/2] Trying youtube-transcript-api...")
+        log(f"  [1/{n_strategies}] Trying youtube-transcript-api...")
         result = fetch_via_ytt(video_id, lang, translate_to=translate_to)
         if result.snippets:
             log(f"  [ok]  Got {len(result.snippets)} snippets via youtube-transcript-api")
@@ -282,7 +399,7 @@ def fetch_transcript(
 
     # Strategy 2
     try:
-        log("  [2/2] Trying yt-dlp...")
+        log(f"  [2/{n_strategies}] Trying yt-dlp...")
         result = fetch_via_ytdlp(video_id, lang, translate_to=translate_to)
         if result.snippets:
             log(f"  [ok]  Got {len(result.snippets)} snippets via yt-dlp")
@@ -290,6 +407,18 @@ def fetch_transcript(
     except Exception as e:
         errors.append(f"yt-dlp: {e}")
         log(f"  [fail] yt-dlp: {e}")
+
+    # Strategy 3: Whisper (opt-in)
+    if whisper:
+        try:
+            log(f"  [3/{n_strategies}] Trying Whisper ({whisper_model})...")
+            result = fetch_via_whisper(video_id, lang, whisper_model=whisper_model)
+            if result.snippets:
+                log(f"  [ok]  Got {len(result.snippets)} segments via Whisper")
+                return result
+        except Exception as e:
+            errors.append(f"whisper: {e}")
+            log(f"  [fail] whisper: {e}")
 
     raise RuntimeError(
         f"All transcript extraction methods failed for {video_id}:\n"
