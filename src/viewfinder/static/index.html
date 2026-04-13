@@ -137,6 +137,14 @@
                     <input type="text" id="opt-translate" placeholder="e.g. es, fr, ja (blank = original)" />
                 </div>
                 <div>
+                    <label>Whisper Fallback</label>
+                    <select id="opt-whisper">
+                        <option value="off">Off (subtitles only)</option>
+                        <option value="local">Local GPU (free, ~3 min/hr)</option>
+                        <option value="groq">Groq Cloud (~$0.01/hr, fast)</option>
+                    </select>
+                </div>
+                <div>
                     <div class="checkbox-row">
                         <input type="checkbox" id="opt-transcript-only" />
                         <label for="opt-transcript-only">Transcript only (no summary)</label>
@@ -265,11 +273,14 @@ async function doIngest() {
     setStatus('Submitting...', true);
     document.getElementById('result').innerHTML = '';
 
+    const whisperSel = document.getElementById('opt-whisper').value;
     const body = {
         url,
         prompt: document.getElementById('opt-prompt').value,
         model: document.getElementById('opt-model').value,
         transcript_only: document.getElementById('opt-transcript-only').checked,
+        whisper: whisperSel !== 'off',
+        whisper_backend: whisperSel === 'off' ? 'local' : whisperSel,
     };
     const translate = document.getElementById('opt-translate').value.trim();
     if (translate) body.translate_to = translate;

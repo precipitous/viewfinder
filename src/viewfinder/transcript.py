@@ -211,106 +211,171 @@ def fetch_via_ytdlp(
 
 # ---------------------------------------------------------------------------
 # Strategy 3: Whisper (for videos without captions)
+#
+# Two backends:
+#   - "local"  : faster-whisper on GPU (free, ~2-5 min per hour of audio)
+#   - "groq"   : Groq Whisper API (~$0.01/hr, ~10 seconds per hour of audio)
 # ---------------------------------------------------------------------------
+
+
+def _download_audio(video_id: str, tmp_dir: str) -> tuple[str, VideoMeta]:
+    """Download audio from YouTube video. Returns (audio_path, metadata)."""
+    import yt_dlp
+
+    _youtube_throttle()
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    audio_path = f"{tmp_dir}/{video_id}.%(ext)s"
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": audio_path,
+        "quiet": True,
+        "no_warnings": True,
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "128",
+            }
+        ],
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+
+    meta = VideoMeta(
+        video_id=video_id,
+        title=info.get("title"),
+        channel=info.get("channel") or info.get("uploader"),
+        duration_seconds=info.get("duration"),
+        upload_date=info.get("upload_date"),
+        description=info.get("description"),
+    )
+
+    return f"{tmp_dir}/{video_id}.mp3", meta
+
+
+def _transcribe_local(
+    audio_path: str,
+    lang: str,
+    model_size: str,
+    verbose: bool,
+) -> list[TranscriptSnippet]:
+    """Transcribe audio using faster-whisper locally (GPU or CPU)."""
+    from faster_whisper import WhisperModel
+
+    log = (lambda msg: print(msg, file=sys.stderr)) if verbose else (lambda _: None)
+
+    # Use GPU if available, fall back to CPU
+    device = "cuda"
+    compute_type = "float16"
+    try:
+        import ctranslate2
+
+        if not ctranslate2.get_cuda_device_count():
+            device = "cpu"
+            compute_type = "int8"
+    except Exception:
+        device = "cpu"
+        compute_type = "int8"
+
+    log(f"  [whisper] Loading {model_size} model on {device}...")
+    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+
+    log("  [whisper] Transcribing...")
+    segments_iter, info = model.transcribe(audio_path, language=lang)
+
+    snippets = []
+    for seg in segments_iter:
+        text = seg.text.strip()
+        if text:
+            dur = seg.end - seg.start
+            snippets.append(TranscriptSnippet(text=text, start=seg.start, duration=dur))
+
+    log(f"  [whisper] {len(snippets)} segments, detected language: {info.language}")
+    return snippets
+
+
+def _transcribe_groq(
+    audio_path: str,
+    lang: str,
+    verbose: bool,
+) -> list[TranscriptSnippet]:
+    """Transcribe audio using Groq's Whisper API (~$0.01/hr)."""
+    import os
+
+    import httpx
+
+    log = (lambda msg: print(msg, file=sys.stderr)) if verbose else (lambda _: None)
+
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY not set. Get one at https://console.groq.com")
+
+    log("  [groq] Uploading audio to Groq Whisper API...")
+
+    with open(audio_path, "rb") as f:
+        resp = httpx.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            files={"file": (audio_path.split("/")[-1], f, "audio/mpeg")},
+            data={
+                "model": "whisper-large-v3",
+                "response_format": "verbose_json",
+                "language": lang,
+            },
+            timeout=300,
+        )
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"Groq API error {resp.status_code}: {resp.text[:300]}")
+
+    data = resp.json()
+    segments = data.get("segments", [])
+
+    snippets = []
+    for seg in segments:
+        text = seg.get("text", "").strip()
+        if text:
+            snippets.append(
+                TranscriptSnippet(
+                    text=text,
+                    start=seg.get("start", 0.0),
+                    duration=seg.get("end", 0.0) - seg.get("start", 0.0),
+                )
+            )
+
+    log(f"  [groq] {len(snippets)} segments transcribed")
+    return snippets
 
 
 def fetch_via_whisper(
     video_id: str,
     lang: str = "en",
-    whisper_model: str = "base",
+    whisper_model: str = "small",
+    whisper_backend: str = "local",
+    verbose: bool = True,
 ) -> TranscriptResult:
-    """Fallback method: download audio via yt-dlp, transcribe with Whisper.
-
-    Requires the `whisper` CLI to be installed (pip install openai-whisper).
-    This is the last resort for videos with no captions at all.
+    """Fallback: download audio, transcribe with Whisper.
 
     Args:
         video_id: YouTube video ID.
         lang: Language hint for Whisper.
-        whisper_model: Whisper model size (tiny, base, small, medium, large).
+        whisper_model: Model size for local backend (tiny/base/small/medium/large).
+        whisper_backend: "local" (faster-whisper on GPU/CPU) or "groq" (cloud API).
+        verbose: Print progress to stderr.
     """
-    import json as _json
-    import shutil
-    import subprocess
     import tempfile
 
-    import yt_dlp
-
-    whisper_bin = shutil.which("whisper")
-    if not whisper_bin:
-        raise RuntimeError("whisper CLI not found. Install with: pip install openai-whisper")
-
-    url = f"https://www.youtube.com/watch?v={video_id}"
+    log = (lambda msg: print(msg, file=sys.stderr)) if verbose else (lambda _: None)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        # Download audio only
-        audio_path = f"{tmp_dir}/{video_id}.%(ext)s"
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": audio_path,
-            "quiet": True,
-            "no_warnings": True,
-            "cookiesfrombrowser": ("chrome",),
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }
-            ],
-        }
+        log(f"  [whisper] Downloading audio for {video_id}...")
+        audio_path, meta = _download_audio(video_id, tmp_dir)
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-
-        meta = VideoMeta(
-            video_id=video_id,
-            title=info.get("title"),
-            channel=info.get("channel") or info.get("uploader"),
-            duration_seconds=info.get("duration"),
-            upload_date=info.get("upload_date"),
-            description=info.get("description"),
-        )
-
-        audio_file = f"{tmp_dir}/{video_id}.mp3"
-
-        # Run whisper CLI
-        result = subprocess.run(
-            [
-                whisper_bin,
-                audio_file,
-                "--model",
-                whisper_model,
-                "--language",
-                lang,
-                "--output_format",
-                "json",
-                "--output_dir",
-                tmp_dir,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-
-        if result.returncode != 0:
-            raise RuntimeError(f"Whisper failed: {result.stderr[:500]}")
-
-        # Parse whisper JSON output
-        json_file = f"{tmp_dir}/{video_id}.json"
-        with open(json_file) as f:
-            whisper_data = _json.load(f)
-
-    segments = whisper_data.get("segments", [])
-    snippets = [
-        TranscriptSnippet(
-            text=seg["text"].strip(),
-            start=seg["start"],
-            duration=seg["end"] - seg["start"],
-        )
-        for seg in segments
-        if seg.get("text", "").strip()
-    ]
+        if whisper_backend == "groq":
+            snippets = _transcribe_groq(audio_path, lang, verbose)
+        else:
+            snippets = _transcribe_local(audio_path, lang, whisper_model, verbose)
 
     return TranscriptResult(
         meta=meta,
@@ -387,7 +452,8 @@ def fetch_transcript(
     translate_to: str | None = None,
     enrich: bool = True,
     whisper: bool = False,
-    whisper_model: str = "base",
+    whisper_model: str = "small",
+    whisper_backend: str = "local",
     verbose: bool = True,
 ) -> TranscriptResult:
     """Fetch transcript using fallback chain.
@@ -395,7 +461,7 @@ def fetch_transcript(
     Order:
         1. youtube-transcript-api (fast, lightweight; supports translation)
         2. yt-dlp (heavier, broader compatibility; limited translation)
-        3. Whisper (downloads audio + local transcription; opt-in or auto-fallback)
+        3. Whisper (downloads audio + transcription; opt-in or auto-fallback)
 
     Args:
         video_id: YouTube video ID.
@@ -403,7 +469,8 @@ def fetch_transcript(
         translate_to: If set, translate transcript to this language code.
         enrich: Enrich metadata via yt-dlp if sparse.
         whisper: If True, include Whisper in the fallback chain.
-        whisper_model: Whisper model size (tiny/base/small/medium/large).
+        whisper_model: Model size for local Whisper (tiny/base/small/medium/large).
+        whisper_backend: "local" (faster-whisper on GPU) or "groq" (cloud, ~$0.01/hr).
         verbose: Print progress to stderr.
     """
     log = (lambda msg: print(msg, file=sys.stderr)) if verbose else (lambda _: None)
@@ -441,15 +508,26 @@ def fetch_transcript(
 
     # Strategy 3: Whisper (opt-in)
     if whisper:
+        backend_label = f"Whisper/{whisper_backend}"
+        if whisper_backend == "local":
+            backend_label = f"faster-whisper ({whisper_model})"
+        elif whisper_backend == "groq":
+            backend_label = "Groq Whisper API"
         try:
-            log(f"  [3/{n_strategies}] Trying Whisper ({whisper_model})...")
-            result = fetch_via_whisper(video_id, lang, whisper_model=whisper_model)
+            log(f"  [3/{n_strategies}] Trying {backend_label}...")
+            result = fetch_via_whisper(
+                video_id,
+                lang,
+                whisper_model=whisper_model,
+                whisper_backend=whisper_backend,
+                verbose=verbose,
+            )
             if result.snippets:
-                log(f"  [ok]  Got {len(result.snippets)} segments via Whisper")
+                log(f"  [ok]  Got {len(result.snippets)} segments via {backend_label}")
                 return result
         except Exception as e:
-            errors.append(f"whisper: {e}")
-            log(f"  [fail] whisper: {e}")
+            errors.append(f"whisper ({whisper_backend}): {e}")
+            log(f"  [fail] {backend_label}: {e}")
 
     raise RuntimeError(
         f"All transcript extraction methods failed for {video_id}:\n"

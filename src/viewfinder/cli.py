@@ -126,17 +126,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep the downloaded video file after screenshot extraction",
     )
 
-    # Whisper options
+    # Whisper fallback options
     p.add_argument(
         "--whisper",
         action="store_true",
-        help="Enable Whisper fallback for videos without captions (requires openai-whisper)",
+        help="Enable Whisper fallback when subtitles unavailable",
+    )
+    p.add_argument(
+        "--whisper-backend",
+        default="local",
+        choices=["local", "groq"],
+        help="Whisper backend: local (faster-whisper, free) or groq (~$0.01/hr, fast)",
     )
     p.add_argument(
         "--whisper-model",
-        default="base",
+        default="small",
         choices=["tiny", "base", "small", "medium", "large"],
-        help="Whisper model size (default: base)",
+        help="Local Whisper model size (default: small)",
     )
 
     p.add_argument(
@@ -255,6 +261,7 @@ def process_video(video_input: str, args: argparse.Namespace, store=None) -> str
             enrich=not args.no_enrich,
             whisper=args.whisper,
             whisper_model=args.whisper_model,
+            whisper_backend=args.whisper_backend,
             verbose=verbose,
         )
         # Save to cache

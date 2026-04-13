@@ -114,6 +114,9 @@ class IngestRequest(BaseModel):
     base_url: str | None = None
     transcript_only: bool = False
     api_key: str | None = None
+    whisper: bool = False
+    whisper_backend: str = "local"  # "local" (faster-whisper) or "groq" (~$0.01/hr)
+    whisper_model: str = "small"
 
 
 class VideoSummary(BaseModel):
@@ -168,6 +171,9 @@ async def ingest_video(req: IngestRequest):
                     video_id,
                     lang=req.lang,
                     translate_to=req.translate_to,
+                    whisper=req.whisper,
+                    whisper_backend=req.whisper_backend,
+                    whisper_model=req.whisper_model,
                     verbose=False,
                 ),
             )
