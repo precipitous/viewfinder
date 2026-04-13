@@ -495,10 +495,10 @@ def _correct_transcript_with_llm(
         # Try local LLM first (R1 / ollama / vLLM)
         response = _call_openai_compat(
             prompt=prompt,
-            model="qwen3-235b-a22b",
+            model="laserbeak-triage-q4",
             max_tokens=len(full_text) + 1000,
             api_key=None,
-            base_url="http://localhost:3333",
+            base_url="http://localhost:11434",
         )
         corrected_text = response.text.strip()
 
