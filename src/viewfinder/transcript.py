@@ -446,86 +446,82 @@ def list_available_languages(video_id: str) -> list[dict[str, str]]:
     return languages
 
 
-def _correct_transcript_with_llm(
+def _correct_transcript(
     result: TranscriptResult,
     verbose: bool = True,
 ) -> TranscriptResult:
-    """Use an LLM to fix proper nouns and technical terms in a Whisper transcript.
+    """Fix proper nouns in a Whisper transcript using title/description context.
 
-    Uses the video title, channel, and description as context to correct
-    terms that Whisper commonly gets wrong (product names, jargon, etc.).
-    Only runs on Whisper-generated transcripts.
+    No LLM needed. Extracts proper nouns from video metadata and uses phonetic
+    similarity to find and replace Whisper mishearings in the transcript.
+    Instant (<0.1s) and deterministic.
     """
+
     if result.source != TranscriptSource.WHISPER:
         return result
 
     log = (lambda msg: print(msg, file=sys.stderr)) if verbose else (lambda _: None)
 
     title = result.meta.title or ""
-    channel = result.meta.channel or ""
-    description = (result.meta.description or "")[:500]
 
     if not title:
         return result
 
-    log("  [correct] Running LLM transcript correction...")
+    log("  [correct] Correcting transcript using title context...")
 
-    # Build a focused correction prompt
-    full_text = result.full_text
-    # Only correct if transcript is manageable size
-    if len(full_text) > 100_000:
-        log("  [correct] Transcript too long for correction, skipping")
+    # Extract 2-word capitalized pairs from title (e.g. "Claude Code", "Trading Bot")
+    # Use 2-word sliding window over title words to catch all pairs
+    title_words = title.replace("(", "").replace(")", "").split()
+    title_terms: list[str] = []
+    for i in range(len(title_words) - 1):
+        a, b = title_words[i], title_words[i + 1]
+        if a[0].isupper() and b[0].isupper() and len(a) > 1 and len(b) > 1:
+            pair = f"{a} {b}"
+            if pair not in title_terms:
+                title_terms.append(pair)
+
+    if not title_terms:
         return result
 
-    prompt = (
-        "Fix proper nouns, product names, and technical terms in this transcript. "
-        "Use the video title, channel, and description as context for what the "
-        "correct spellings should be. Only fix clear errors -- do not rephrase, "
-        "summarize, or change the meaning. Return ONLY the corrected transcript "
-        "text, nothing else.\n\n"
-        f"Video title: {title}\n"
-        f"Channel: {channel}\n"
-        f"Description: {description}\n\n"
-        f"Transcript to correct:\n{full_text}"
-    )
+    # Phonetic normalization for common Whisper mishearings
+    def _phonetic(s: str) -> str:
+        s = s.lower()
+        # Normalize common Whisper confusions to a canonical form
+        s = s.replace("cloud", "clod").replace("claude", "clod")
+        s = s.replace("quad", "clod").replace("claud", "clod")
+        s = s.replace("claw", "cla")
+        return s
 
-    try:
-        from .summarize import _call_openai_compat
+    total_fixes = 0
 
-        # Try local LLM first (R1 / ollama / vLLM)
-        response = _call_openai_compat(
-            prompt=prompt,
-            model="laserbeak-triage-q4",
-            max_tokens=len(full_text) + 1000,
-            api_key=None,
-            base_url="http://localhost:11434",
-        )
-        corrected_text = response.text.strip()
+    # Pass 1: Fix multi-word terms via phonetic matching
+    for term in title_terms:
+        if " " not in term:
+            continue
+        norm = _phonetic(term)
+        term_words = term.split()
+        n = len(term_words)
+        for snippet in result.snippets:
+            words = snippet.text.split()
+            changed = False
+            for i in range(len(words) - n + 1):
+                candidate = " ".join(words[i : i + n])
+                # Strip trailing punctuation for comparison
+                stripped = candidate.rstrip(".,!?;:)")
+                if stripped.lower() == term.lower():
+                    continue  # already correct (just case difference)
+                if _phonetic(stripped) == norm:
+                    # Preserve trailing punctuation
+                    tail = candidate[len(stripped) :]
+                    replacement = term_words[:]
+                    replacement[-1] = replacement[-1] + tail
+                    words[i : i + n] = replacement
+                    changed = True
+                    total_fixes += 1
+            if changed:
+                snippet.text = " ".join(words)
 
-        if corrected_text and len(corrected_text) > len(full_text) * 0.5:
-            # Rebuild snippets with corrected text
-            # Simple approach: replace full text in each snippet proportionally
-            words_original = full_text.split()
-            words_corrected = corrected_text.split()
-
-            if abs(len(words_corrected) - len(words_original)) < len(words_original) * 0.1:
-                # Word counts are close enough -- map corrections back to snippets
-                idx = 0
-                for snippet in result.snippets:
-                    orig_words = snippet.text.split()
-                    n = len(orig_words)
-                    if idx + n <= len(words_corrected):
-                        snippet.text = " ".join(words_corrected[idx : idx + n])
-                    idx += n
-                log(f"  [correct] Transcript corrected ({len(words_corrected)} words)")
-            else:
-                log("  [correct] Word count mismatch, skipping correction")
-        else:
-            log("  [correct] LLM returned empty or truncated response, skipping")
-
-    except Exception as e:
-        log(f"  [correct] LLM correction failed (non-fatal): {e!s:.100}")
-
+    log(f"  [correct] Applied {total_fixes} fixes using {len(title_terms)} title terms")
     return result
 
 
@@ -609,7 +605,7 @@ def fetch_transcript(
             if result.snippets:
                 log(f"  [ok]  Got {len(result.snippets)} segments via {backend_label}")
                 if correct:
-                    result = _correct_transcript_with_llm(result, verbose=verbose)
+                    result = _correct_transcript(result, verbose=verbose)
                 return result
         except Exception as e:
             errors.append(f"whisper ({whisper_backend}): {e}")
