@@ -117,6 +117,7 @@ class IngestRequest(BaseModel):
     whisper: bool = True  # auto-fallback to Whisper when subtitles unavailable
     whisper_backend: str = "local"  # "local" (faster-whisper, free) or "groq" (~$0.01/hr)
     whisper_model: str = "small"
+    whisper_only: bool = False  # skip subtitle fetch, go straight to Whisper
     correct: bool = True  # LLM correction pass on Whisper transcripts
 
 
@@ -175,6 +176,7 @@ async def ingest_video(req: IngestRequest):
                     whisper=req.whisper,
                     whisper_backend=req.whisper_backend,
                     whisper_model=req.whisper_model,
+                    whisper_only=req.whisper_only,
                     correct=req.correct,
                     verbose=False,
                 ),

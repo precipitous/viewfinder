@@ -533,15 +533,16 @@ def fetch_transcript(
     whisper: bool = True,
     whisper_model: str = "small",
     whisper_backend: str = "local",
+    whisper_only: bool = False,
     correct: bool = True,
     verbose: bool = True,
 ) -> TranscriptResult:
     """Fetch transcript using fallback chain.
 
-    Order:
+    Order (unless whisper_only=True):
         1. youtube-transcript-api (fast, lightweight; supports translation)
         2. yt-dlp (heavier, broader compatibility; limited translation)
-        3. Whisper (downloads audio + transcription; opt-in or auto-fallback)
+        3. Whisper (downloads audio + transcription)
 
     Args:
         video_id: YouTube video ID.
@@ -551,40 +552,41 @@ def fetch_transcript(
         whisper: If True, include Whisper in the fallback chain.
         whisper_model: Model size for local Whisper (tiny/base/small/medium/large).
         whisper_backend: "local" (faster-whisper on GPU) or "groq" (cloud, ~$0.01/hr).
+        whisper_only: If True, skip subtitle fetch entirely and go straight to Whisper.
         verbose: Print progress to stderr.
     """
     log = (lambda msg: print(msg, file=sys.stderr)) if verbose else (lambda _: None)
     errors: list[str] = []
-    n_strategies = 3 if whisper else 2
 
     if translate_to:
         log(f"  [info] Translation requested: {lang} -> {translate_to}")
 
-    # Strategy 1
-    try:
-        log(f"  [1/{n_strategies}] Trying youtube-transcript-api...")
-        result = fetch_via_ytt(video_id, lang, translate_to=translate_to)
-        if result.snippets:
-            log(f"  [ok]  Got {len(result.snippets)} snippets via youtube-transcript-api")
-            if result.translated_from:
-                log(f"  [ok]  Translated from {result.translated_from} to {result.language}")
-            if enrich:
-                result = enrich_metadata(result)
-            return result
-    except Exception as e:
-        errors.append(f"youtube-transcript-api: {e}")
-        log(f"  [fail] youtube-transcript-api: {e}")
+    if not whisper_only:
+        # Strategy 1
+        try:
+            log("  [1/3] Trying youtube-transcript-api...")
+            result = fetch_via_ytt(video_id, lang, translate_to=translate_to)
+            if result.snippets:
+                log(f"  [ok]  Got {len(result.snippets)} snippets via youtube-transcript-api")
+                if result.translated_from:
+                    log(f"  [ok]  Translated from {result.translated_from} to {result.language}")
+                if enrich:
+                    result = enrich_metadata(result)
+                return result
+        except Exception as e:
+            errors.append(f"youtube-transcript-api: {e}")
+            log(f"  [fail] youtube-transcript-api: {e}")
 
-    # Strategy 2
-    try:
-        log(f"  [2/{n_strategies}] Trying yt-dlp...")
-        result = fetch_via_ytdlp(video_id, lang, translate_to=translate_to)
-        if result.snippets:
-            log(f"  [ok]  Got {len(result.snippets)} snippets via yt-dlp")
-            return result
-    except Exception as e:
-        errors.append(f"yt-dlp: {e}")
-        log(f"  [fail] yt-dlp: {e}")
+        # Strategy 2
+        try:
+            log("  [2/3] Trying yt-dlp...")
+            result = fetch_via_ytdlp(video_id, lang, translate_to=translate_to)
+            if result.snippets:
+                log(f"  [ok]  Got {len(result.snippets)} snippets via yt-dlp")
+                return result
+        except Exception as e:
+            errors.append(f"yt-dlp: {e}")
+            log(f"  [fail] yt-dlp: {e}")
 
     # Strategy 3: Whisper (opt-in)
     if whisper:
@@ -594,7 +596,7 @@ def fetch_transcript(
         elif whisper_backend == "groq":
             backend_label = "Groq Whisper API"
         try:
-            log(f"  [3/{n_strategies}] Trying {backend_label}...")
+            log(f"  [whisper] Trying {backend_label}...")
             result = fetch_via_whisper(
                 video_id,
                 lang,

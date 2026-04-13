@@ -133,6 +133,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable Whisper fallback (only use YouTube subtitles)",
     )
     p.add_argument(
+        "--whisper-only",
+        action="store_true",
+        help="Skip subtitle fetch, go straight to Whisper (avoids YouTube rate limits)",
+    )
+    p.add_argument(
         "--fast",
         action="store_true",
         help="Use Groq cloud for Whisper (~$0.01/hr) instead of local GPU",
@@ -266,6 +271,7 @@ def process_video(video_input: str, args: argparse.Namespace, store=None) -> str
             whisper=not args.no_whisper,
             whisper_model=args.whisper_model,
             whisper_backend="groq" if args.fast else "local",
+            whisper_only=args.whisper_only,
             correct=not args.no_correct,
             verbose=verbose,
         )
