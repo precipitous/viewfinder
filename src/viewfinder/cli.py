@@ -126,23 +126,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep the downloaded video file after screenshot extraction",
     )
 
-    # Whisper fallback options
+    # Whisper fallback options (on by default)
     p.add_argument(
-        "--whisper",
+        "--no-whisper",
         action="store_true",
-        help="Enable Whisper fallback when subtitles unavailable",
+        help="Disable Whisper fallback (only use YouTube subtitles)",
     )
     p.add_argument(
-        "--whisper-backend",
-        default="local",
-        choices=["local", "groq"],
-        help="Whisper backend: local (faster-whisper, free) or groq (~$0.01/hr, fast)",
+        "--fast",
+        action="store_true",
+        help="Use Groq cloud for Whisper (~$0.01/hr) instead of local GPU",
     )
     p.add_argument(
         "--whisper-model",
         default="small",
         choices=["tiny", "base", "small", "medium", "large"],
         help="Local Whisper model size (default: small)",
+    )
+    p.add_argument(
+        "--no-correct",
+        action="store_true",
+        help="Skip LLM transcript correction on Whisper output",
     )
 
     p.add_argument(
@@ -259,9 +263,10 @@ def process_video(video_input: str, args: argparse.Namespace, store=None) -> str
             lang=args.lang,
             translate_to=args.translate_to,
             enrich=not args.no_enrich,
-            whisper=args.whisper,
+            whisper=not args.no_whisper,
             whisper_model=args.whisper_model,
-            whisper_backend=args.whisper_backend,
+            whisper_backend="groq" if args.fast else "local",
+            correct=not args.no_correct,
             verbose=verbose,
         )
         # Save to cache

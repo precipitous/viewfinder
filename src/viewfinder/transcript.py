@@ -446,14 +446,98 @@ def list_available_languages(video_id: str) -> list[dict[str, str]]:
     return languages
 
 
+def _correct_transcript_with_llm(
+    result: TranscriptResult,
+    verbose: bool = True,
+) -> TranscriptResult:
+    """Use an LLM to fix proper nouns and technical terms in a Whisper transcript.
+
+    Uses the video title, channel, and description as context to correct
+    terms that Whisper commonly gets wrong (product names, jargon, etc.).
+    Only runs on Whisper-generated transcripts.
+    """
+    if result.source != TranscriptSource.WHISPER:
+        return result
+
+    log = (lambda msg: print(msg, file=sys.stderr)) if verbose else (lambda _: None)
+
+    title = result.meta.title or ""
+    channel = result.meta.channel or ""
+    description = (result.meta.description or "")[:500]
+
+    if not title:
+        return result
+
+    log("  [correct] Running LLM transcript correction...")
+
+    # Build a focused correction prompt
+    full_text = result.full_text
+    # Only correct if transcript is manageable size
+    if len(full_text) > 100_000:
+        log("  [correct] Transcript too long for correction, skipping")
+        return result
+
+    prompt = (
+        "Fix proper nouns, product names, and technical terms in this transcript. "
+        "Use the video title, channel, and description as context for what the "
+        "correct spellings should be. Only fix clear errors -- do not rephrase, "
+        "summarize, or change the meaning. Return ONLY the corrected transcript "
+        "text, nothing else.\n\n"
+        f"Video title: {title}\n"
+        f"Channel: {channel}\n"
+        f"Description: {description}\n\n"
+        f"Transcript to correct:\n{full_text}"
+    )
+
+    try:
+        from .summarize import _call_openai_compat
+
+        # Try local LLM first (R1 / ollama / vLLM)
+        response = _call_openai_compat(
+            prompt=prompt,
+            model="qwen3-235b-a22b",
+            max_tokens=len(full_text) + 1000,
+            api_key=None,
+            base_url="http://localhost:3333",
+        )
+        corrected_text = response.text.strip()
+
+        if corrected_text and len(corrected_text) > len(full_text) * 0.5:
+            # Rebuild snippets with corrected text
+            # Simple approach: replace full text in each snippet proportionally
+            words_original = full_text.split()
+            words_corrected = corrected_text.split()
+
+            if abs(len(words_corrected) - len(words_original)) < len(words_original) * 0.1:
+                # Word counts are close enough -- map corrections back to snippets
+                idx = 0
+                for snippet in result.snippets:
+                    orig_words = snippet.text.split()
+                    n = len(orig_words)
+                    if idx + n <= len(words_corrected):
+                        snippet.text = " ".join(words_corrected[idx : idx + n])
+                    idx += n
+                log(f"  [correct] Transcript corrected ({len(words_corrected)} words)")
+            else:
+                log("  [correct] Word count mismatch, skipping correction")
+        else:
+            log("  [correct] LLM returned empty or truncated response, skipping")
+
+    except Exception as e:
+        log(f"  [correct] LLM correction failed (non-fatal): {e!s:.100}")
+
+    return result
+
+
 def fetch_transcript(
     video_id: str,
     lang: str = "en",
     translate_to: str | None = None,
     enrich: bool = True,
-    whisper: bool = False,
+    whisper: bool = True,
     whisper_model: str = "small",
     whisper_backend: str = "local",
+    correct: bool = True,
     verbose: bool = True,
 ) -> TranscriptResult:
     """Fetch transcript using fallback chain.
@@ -524,6 +608,8 @@ def fetch_transcript(
             )
             if result.snippets:
                 log(f"  [ok]  Got {len(result.snippets)} segments via {backend_label}")
+                if correct:
+                    result = _correct_transcript_with_llm(result, verbose=verbose)
                 return result
         except Exception as e:
             errors.append(f"whisper ({whisper_backend}): {e}")
